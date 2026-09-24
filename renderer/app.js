@@ -449,7 +449,9 @@ async function refreshSettings () {
   $('updateCheck').checked = settings.updateCheck
   $('updateRepo').value = settings.updateRepo
   learned = settings.speed || null
-  plan = estimate($('lyrics').value, { firstRun: !warmed })
+  // plan 은 "지금 만들고 있는 곡"의 추정치다. 생성 중에 설정 창을 열었다고 해서
+  // 입력칸에 적힌 다른 가사 기준으로 덮어쓰면 진행 막대가 엉뚱하게 뛴다.
+  if (!running) plan = estimate($('lyrics').value, { firstRun: !warmed })
   $('speedInfo').textContent = learned
     ? `곡 ${learned.samples}개를 만들면서 잰 값으로 예상 시간을 맞추고 있습니다 ` +
       `(노래 생성 초당 ${Math.round(learned.semantic)}토큰).`
