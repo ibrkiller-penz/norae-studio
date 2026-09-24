@@ -1,0 +1,254 @@
+<!doctype html>
+<html lang="ko">
+<head>
+<meta charset="utf-8">
+<!-- 화면은 이 폴더 안의 파일과 로컬 음원만 불러온다. 바깥 주소는 아예 막는다. -->
+<meta http-equiv="Content-Security-Policy" content="default-src 'self'; media-src 'self' file:; style-src 'self' 'unsafe-inline'">
+<title>노래공방</title>
+<link rel="stylesheet" href="styles.css">
+</head>
+<body>
+
+<!-- 첫 실행 설치 화면 ---------------------------------------------------------->
+<div id="setup" class="overlay hidden">
+  <div class="setup-card">
+    <h1>노래공방 설치</h1>
+    <p class="muted">곡을 만들려면 AI 실행 환경과 모델이 필요합니다. 한 번만 받으면 됩니다.
+      (약 11GB, 인터넷 속도에 따라 10~40분)</p>
+
+    <!-- 이미 같은 부품이 컴퓨터에 있으면 다시 받지 않는다 -->
+    <div id="adopt" class="adopt hidden">
+      <b>이 컴퓨터에 이미 쓸 수 있는 AI 실행환경이 있습니다.</b>
+      <span class="muted" id="adoptPath"></span>
+      <button id="adoptUse" class="primary small">그대로 쓰기 (다운로드 없음)</button>
+    </div>
+
+    <div class="location">
+      <div class="location-text">
+        <span class="muted">설치 위치</span>
+        <b id="dataDir">확인 중…</b>
+      </div>
+      <button id="pickLocation" class="ghost small">변경</button>
+    </div>
+
+    <div id="preflight" class="preflight hidden"></div>
+
+    <ul class="steps">
+      <li data-step="gpu"><span class="dot"></span><b>그래픽카드 확인</b><span class="detail"></span></li>
+      <li data-step="uv"><span class="dot"></span><b>설치 도구 준비</b><span class="detail"></span></li>
+      <li data-step="venv"><span class="dot"></span><b>파이썬 환경 구성</b><span class="detail"></span></li>
+      <li data-step="torch"><span class="dot"></span><b>AI 엔진 설치 (약 3GB)</b><span class="detail"></span></li>
+      <li data-step="yue"><span class="dot"></span><b>YuE2 설치</b><span class="detail"></span></li>
+      <li data-step="models"><span class="dot"></span><b>음악 모델 다운로드 (약 8GB)</b><span class="detail"></span></li>
+      <li data-step="verify"><span class="dot"></span><b>엔진 점검</b><span class="detail"></span></li>
+    </ul>
+
+    <div class="bar"><div id="setupBar"></div></div>
+    <div class="setup-actions">
+      <button id="setupStart" class="primary">설치 시작</button>
+      <button id="setupLogToggle" class="ghost">자세히 보기</button>
+    </div>
+    <pre id="setupLog" class="log hidden"></pre>
+    <p id="setupError" class="error hidden"></p>
+  </div>
+</div>
+
+<!-- 위쪽 막대 ------------------------------------------------------------------>
+<header class="topbar">
+  <div class="brand">
+    <svg class="logo" viewBox="0 0 256 256" aria-hidden="true">
+      <defs>
+        <linearGradient id="logoFill" x1="0" y1="0" x2="1" y2="1">
+          <stop offset="0" stop-color="#7c5cff"/><stop offset="1" stop-color="#ff5c9d"/>
+        </linearGradient>
+      </defs>
+      <rect x="0" y="0" width="256" height="256" rx="56" fill="url(#logoFill)"/>
+      <!-- 음표 두 개 -->
+      <path d="M96 176V80l84-18v96" fill="none" stroke="#fff" stroke-width="18"
+            stroke-linecap="round" stroke-linejoin="round"/>
+      <circle cx="80" cy="180" r="20" fill="#fff"/>
+      <circle cx="164" cy="162" r="20" fill="#fff"/>
+    </svg>
+    <span class="brand-name">노래<span>공방</span></span>
+    <span class="version" id="versionInfo"></span>
+  </div>
+  <div class="credit">
+    <span class="muted" id="gpuInfo"></span>
+    <button id="settingsBtn" class="ghost small">설정</button>
+  </div>
+</header>
+
+<!-- 본문 ----------------------------------------------------------------------->
+<main>
+  <section class="workspace">
+    <div class="panel lyrics-panel">
+      <div class="panel-head">
+        <h2>가사</h2>
+        <div class="head-actions">
+          <label class="inst-toggle"><input type="checkbox" id="instrumental"> 가사 없이 (연주곡)</label>
+          <input id="title" placeholder="곡 제목" maxlength="60">
+          <button id="lyricsHelp" class="ghost small">태그 안내</button>
+        </div>
+      </div>
+      <textarea id="lyrics" spellcheck="false" placeholder="[Verse]
+창문을 열면 불빛이 흘러
+한강 위로 번지는 네온
+
+[Chorus]
+너와 함께 달려가
+도시의 별빛 아래서"></textarea>
+      <div class="hint muted" id="lyricsHint">[Verse] [Pre-Chorus] [Chorus] [Bridge] 로 구간을 나누면 곡 구조가 좋아집니다.</div>
+    </div>
+
+    <div class="panel prompt-panel">
+      <div class="panel-head">
+        <h2>스타일 프롬프트</h2>
+        <div class="head-actions">
+          <label class="seed-label">시드
+            <input id="seed" placeholder="랜덤" inputmode="numeric">
+          </label>
+        </div>
+      </div>
+      <div id="presets" class="presets"></div>
+      <textarea id="style" spellcheck="false" placeholder="장르, 악기, 보컬 톤, 분위기, BPM을 영어로 적으면 가장 잘 나옵니다."></textarea>
+      <div class="generate-row">
+        <button id="generate" class="primary big">곡 만들기</button>
+        <span id="generateHint" class="muted hint"></span>
+      </div>
+      <!-- 생성 중 진행 상황 -->
+      <div id="run" class="run hidden">
+        <div class="run-head">
+          <b id="runTitle"></b>
+          <span id="runStage" class="muted"></span>
+        </div>
+        <div class="bar"><div id="runBar"></div></div>
+        <div class="run-foot">
+          <span id="runNote" class="muted tiny"></span>
+          <button id="cancel" class="ghost small danger">취소</button>
+        </div>
+      </div>
+      <div id="queueBox" class="queue hidden">
+        <div class="queue-head"><b>대기 중인 곡</b><button id="queueClear" class="ghost small">비우기</button></div>
+        <ul id="queueList"></ul>
+      </div>
+    </div>
+  </section>
+
+  <!-- 오른쪽 보관함 ------------------------------------------------------------>
+  <aside class="library">
+    <div class="panel-head">
+      <h2>프로젝트</h2>
+      <div class="head-actions">
+        <button id="openFolder" class="ghost small">폴더</button>
+      </div>
+    </div>
+    <div class="projects">
+      <select id="project"></select>
+      <button id="newProject" class="ghost small" title="새 프로젝트">＋</button>
+      <button id="renameProject" class="ghost small" title="프로젝트 이름 변경">✎</button>
+      <button id="deleteProject" class="ghost small danger" title="프로젝트 삭제">🗑</button>
+    </div>
+
+    <div class="options">
+      <label><input type="checkbox" id="autoMp3"> 완성되면 MP3로 자동 저장</label>
+      <label class="sub-option"><input type="checkbox" id="dropWav" disabled> 원본(WAV) 지워 용량 아끼기</label>
+      <div class="option-buttons">
+        <button id="compact" class="ghost small">이미 만든 곡 정리</button>
+        <button id="moveModels" class="ghost small">모델 위치 옮기기</button>
+      </div>
+    </div>
+
+    <div id="songs" class="songs"></div>
+
+    <div id="player" class="player hidden">
+      <div class="now" id="nowTitle"></div>
+      <audio id="audio" controls></audio>
+      <div class="player-actions">
+        <button id="exportMp3" class="ghost small">MP3 저장</button>
+        <button id="renameSong" class="ghost small">이름 변경</button>
+        <button id="revealSong" class="ghost small">폴더 열기</button>
+        <button id="deleteSong" class="ghost small danger">삭제</button>
+      </div>
+      <details class="meta">
+        <summary>곡 정보</summary>
+        <div id="songMeta"></div>
+      </details>
+    </div>
+  </aside>
+</main>
+
+<!-- 설정 ----------------------------------------------------------------------->
+<div id="settings" class="overlay hidden">
+  <div class="setup-card">
+    <h1>설정</h1>
+    <label class="row-check"><input type="checkbox" id="updateCheck"> 시작할 때 새 버전 확인</label>
+    <label class="field">
+      <span class="muted">업데이트를 받아올 GitHub 저장소</span>
+      <input id="updateRepo" placeholder="사용자명/저장소이름" autocomplete="off">
+    </label>
+    <p class="muted tiny">본인 GitHub 릴리스에서만 받습니다. 저장소가 비공개거나 릴리스가 없으면
+      조용히 넘어갑니다(프로그램은 그대로 동작). 비워 두거나 확인을 끄면 아예 접속하지 않습니다.</p>
+
+    <div class="field">
+      <span class="muted">예상 시간 정확도</span>
+      <p id="speedInfo" class="muted tiny"></p>
+      <button id="resetSpeed" class="ghost small">측정값 초기화</button>
+    </div>
+    <p class="muted tiny">곡을 만들 때마다 이 컴퓨터가 실제로 얼마나 걸렸는지 재서
+      다음 곡의 "남은 시간"을 맞춥니다. 그래픽카드를 바꿨다면 초기화하세요.</p>
+
+    <div class="setup-actions">
+      <button id="settingsSave" class="primary">저장</button>
+      <button id="settingsClose" class="ghost">닫기</button>
+      <button id="openLog" class="ghost">기록 파일 열기</button>
+    </div>
+  </div>
+</div>
+
+<!-- 새 버전 알림 --------------------------------------------------------------->
+<div id="update" class="overlay hidden">
+  <div class="setup-card update-card">
+    <h1>새 버전이 나왔습니다</h1>
+    <p class="muted"><span id="updateFrom"></span> → <b id="updateTo"></b></p>
+    <pre id="updateNotes" class="notes hidden"></pre>
+    <div class="bar hidden" id="updateBarWrap"><div id="updateBar"></div></div>
+    <p id="updateStatus" class="muted hidden"></p>
+    <div class="setup-actions">
+      <button id="updateNow" class="primary">지금 업데이트</button>
+      <button id="updateLater" class="ghost">나중에</button>
+    </div>
+    <p class="muted tiny">업데이트하면 프로그램이 잠시 닫혔다가 다시 열립니다.
+      만든 곡과 설치된 AI 모델은 그대로 유지됩니다.</p>
+  </div>
+</div>
+
+<!-- 오류 안내 ------------------------------------------------------------------>
+<div id="problem" class="overlay hidden">
+  <div class="setup-card problem-card">
+    <h1>곡을 만들지 못했습니다</h1>
+    <p id="problemText" class="problem-text"></p>
+    <pre id="problemDetail" class="log hidden"></pre>
+    <div class="setup-actions">
+      <button id="problemClose" class="primary">닫기</button>
+      <button id="problemCopy" class="ghost">오류 내용 복사</button>
+      <button id="problemLog" class="ghost">기록 파일 열기</button>
+    </div>
+  </div>
+</div>
+
+<!-- 이름 입력 (Electron 에는 prompt() 가 없다) ---------------------------------->
+<div id="ask" class="overlay hidden">
+  <div class="setup-card ask-card">
+    <h1 id="askTitle">이름 변경</h1>
+    <input id="askInput" maxlength="60" autocomplete="off">
+    <div class="setup-actions">
+      <button id="askOk" class="primary">확인</button>
+      <button id="askCancel" class="ghost">취소</button>
+    </div>
+  </div>
+</div>
+
+<div id="toast" class="toast hidden"></div>
+<script src="app.js"></script>
+</body>
+</html>

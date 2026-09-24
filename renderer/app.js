@@ -1,0 +1,808 @@
+'use strict'
+// 노래공방 — 화면. 메인 프로세스와는 preload 가 열어준 window.norae 로만 이야기한다.
+
+const $ = (id) => document.getElementById(id)
+const api = window.norae
+
+// ── 스타일 프리셋 ─────────────────────────────────────────────────────────────
+// 모델이 영어 설명에 훨씬 잘 반응한다. 장르·악기·보컬 톤·분위기·BPM 순서로 적는다.
+const PRESETS = [
+  { name: '시티팝', style: 'Korean, 1980s city pop, groovy funk bass, Rhodes electric piano, bright brass stabs, clean funky guitar cutting, analog synth pads, tight disco drums, sweet airy Korean female vocal, nostalgic night drive mood, 112 BPM' },
+  { name: '트로트', style: 'Korean trot, ppongjjak, upbeat cheerful festival mood, electric organ, bright saxophone fills, brass section, synth strings, shuffle drums with strong backbeat, walking electric bass, warm mature Korean female trot vocal with kkeokgi bending and wide vibrato, 128 BPM' },
+  { name: '발라드', style: 'Korean ballad, emotional piano, lush string section, soft electric guitar solo, slow build to a big chorus, tender Korean female vocal with airy head voice, sorrowful and warm, 68 BPM' },
+  { name: 'K-pop 댄스', style: 'K-pop dance pop, punchy synth bass, bright plucks, trap-influenced hi-hats, big layered chorus with group vocals, confident young Korean female vocal, glossy modern production, 124 BPM' },
+  { name: 'R&B', style: 'Korean R&B, smooth Rhodes chords, mellow bass groove, laid-back drums, subtle vinyl texture, breathy soulful Korean female vocal with rich harmonies, late night mood, 86 BPM' },
+  { name: '어쿠스틱 포크', style: 'Korean acoustic folk, fingerpicked steel string guitar, soft cajon, warm upright bass, gentle strings, intimate Korean female vocal, sunny afternoon mood, 96 BPM' },
+  { name: '신스웨이브', style: 'synthwave retro pop, analog synth arpeggio, gated reverb drums, fat bass synth, neon 1980s atmosphere, dreamy Korean female vocal with reverb, 108 BPM' },
+  { name: '록 밴드', style: 'Korean modern rock band, distorted electric guitars, driving bass, energetic live drums, anthemic chorus, powerful Korean female rock vocal, 142 BPM' },
+  { name: '재즈 보사노바', style: 'bossa nova jazz, nylon string guitar, brushed drums, upright bass, soft flugelhorn, relaxed swing feel, smooth Korean female jazz vocal, cafe mood, 92 BPM' },
+  { name: '동요', style: 'Korean childrens song, bright xylophone, playful piano, light percussion, simple cheerful melody, clear friendly Korean female vocal, happy and innocent mood, 116 BPM' }
+]
+
+// ── 진행률 추정 ───────────────────────────────────────────────────────────────
+const STAGES = {
+  plan: '작곡 (악보 만드는 중)',
+  semantic: '노래 생성 중',
+  synth: '소리로 바꾸는 중',
+  decode: '파일로 저장 중'
+}
+const ORDER = ['plan', 'semantic', 'synth', 'decode']
+
+// 처음 한 곡을 만들기 전까지 쓸 기본값(RTX 3050급 기준). 곡을 만들 때마다 메인 프로세스가
+// 실제 속도를 재서 settings.json 에 쌓고, 여기서 그 값으로 갈아끼운다. 그래서 어떤 그래픽카드든
+// 두세 곡이면 "남은 시간"이 맞아 들어간다.
+const SPEED = { plan: 14, semantic: 30, synthPerToken: 0.034, decode: 8, load: 55 }
+let learned = null // settings.speed — 이 컴퓨터에서 실제로 잰 값
+
+const clamp = (value, low, high) => Math.min(high, Math.max(low, value))
+
+// 가사 글자 수로 어림잡는 "보정 전" 토큰 수. 학습이 이 값과 실제값을 견주기 때문에
+// 여기에는 학습 결과를 섞지 않는다(섞으면 비율이 1 로 수렴해 보정이 스스로 풀린다).
+function baseTokens (lyrics) {
+  const chars = (lyrics || '').replace(/^\s*\[.*\]\s*$/gm, '').replace(/\s/g, '').length
+  return {
+    plan: clamp(Math.round(500 + 3 * chars), 400, 4096),
+    semantic: clamp(Math.round(1200 + 7 * chars), 800, 9000)
+  }
+}
+
+function estimate (lyrics, { firstRun = true } = {}) {
+  const speed = { ...SPEED, ...(learned || {}) }
+  const base = baseTokens(lyrics)
+  const tokens = {
+    plan: Math.max(200, Math.round(base.plan * (learned && learned.planTokenFactor || 1))),
+    semantic: Math.max(400, Math.round(base.semantic * (learned && learned.semanticTokenFactor || 1)))
+  }
+  const seconds = {
+    plan: tokens.plan / speed.plan,
+    semantic: tokens.semantic / speed.semantic,
+    synth: tokens.semantic * speed.synthPerToken,
+    decode: speed.decode
+  }
+  const total = ORDER.reduce((sum, key) => sum + seconds[key], 0) + (firstRun ? speed.load : 0)
+  const weights = {}
+  for (const key of ORDER) weights[key] = seconds[key] / total
+  return { base, tokens, seconds, weights, total }
+}
+
+// ── 가사 다듬기 ───────────────────────────────────────────────────────────────
+// 모델은 밋밋한 [Verse]/[Chorus] 표시로 학습됐다. 번호가 붙거나 꾸며진 태그,
+// 가사 위에 붙은 마크다운 제목 줄은 둘 다 모델을 헷갈리게 한다.
+const TAG_RULES = [
+  [/pre[\s-]*chorus|프리\s*코러스/i, 'Pre-Chorus'],
+  [/chorus|hook|refrain|후렴|코러스/i, 'Chorus'],
+  [/verse|절|벌스/i, 'Verse'],
+  [/bridge|브릿지/i, 'Bridge'],
+  [/intro|인트로|전주/i, 'Intro'],
+  [/outro|아우트로|아웃트로|후주/i, 'Outro']
+]
+
+// 부를 말이 없어도 모델에게 곡의 모양은 알려줘야 한다. 구간 표시와 연주 신호를
+// 주면 보컬 자리를 비워두지, 없는 음절을 지어내지 않는다.
+const INSTRUMENTAL_LYRICS = [
+  '[Intro]', '[instrumental]', '', '[Verse]', '[instrumental]', '',
+  '[Chorus]', '[instrumental]', '', '[Bridge]', '[instrumental]', '',
+  '[Outro]', '[instrumental]'
+].join('\n')
+
+function instrumentalStyle (style) {
+  return /\b(instrumental|no vocal)/i.test(style)
+    ? style
+    : `${style}, instrumental, no vocals, no singing, melody carried by lead instrument`
+}
+
+function cleanLyrics (raw) {
+  const notes = []
+  let lines = raw.replace(/\r\n/g, '\n').split('\n')
+
+  const titles = lines.filter((line) => /^\s*#/.test(line)).length
+  if (titles) {
+    lines = lines.filter((line) => !/^\s*#/.test(line))
+    notes.push(`제목 줄 ${titles}개를 제외했습니다`)
+  }
+
+  let retagged = 0
+  lines = lines.map((line) => {
+    const match = line.match(/^\s*\[([^\]]+)\]\s*$/)
+    if (!match) return line
+    const rule = TAG_RULES.find(([pattern]) => pattern.test(match[1]))
+    if (!rule) return line
+    const tag = `[${rule[1]}]`
+    if (tag !== line.trim()) retagged += 1
+    return tag
+  })
+  if (retagged) notes.push(`구간 태그 ${retagged}개를 기본 형태로 바꿨습니다`)
+
+  const text = lines.join('\n').replace(/\n{3,}/g, '\n\n').trim()
+  return { text, notes }
+}
+
+// ── 화면 상태 ─────────────────────────────────────────────────────────────────
+let songs = []
+let selected = null
+let running = false
+let warmed = false // 모델 적재 비용(~1분)은 첫 곡에만 든다
+let currentProject = null
+let runningJob = null
+let queueState = { current: null, waiting: [] }
+const plans = new Map() // jobId → 시간 추정. 대기 중인 곡도 자기 추정치를 갖는다
+let plan = estimate('')
+let updateHint = () => {} // wireGenerate 가 채운다. 학습값이 바뀌면 예상 시간을 다시 그린다
+
+// ── 잔심부름 ──────────────────────────────────────────────────────────────────
+let toastTimer = null
+function toast (text, ms = 2600) {
+  const box = $('toast')
+  box.textContent = text
+  box.classList.remove('hidden')
+  clearTimeout(toastTimer)
+  toastTimer = setTimeout(() => box.classList.add('hidden'), ms)
+}
+
+const gb = (bytes) => `${(bytes / 1024 ** 3).toFixed(1)}GB`
+
+function mmss (seconds) {
+  if (!Number.isFinite(seconds) || seconds < 0) return '—'
+  const m = Math.floor(seconds / 60)
+  const s = Math.round(seconds % 60)
+  return `${m}분 ${String(s).padStart(2, '0')}초`
+}
+
+// Electron 에는 prompt() 가 없다. 직접 만든 입력 상자를 약속(Promise)으로 감싼다.
+function ask (title, initial = '') {
+  return new Promise((resolve) => {
+    $('askTitle').textContent = title
+    $('askInput').value = initial
+    $('ask').classList.remove('hidden')
+    $('askInput').focus()
+    $('askInput').select()
+    const done = (value) => {
+      $('ask').classList.add('hidden')
+      $('askOk').onclick = null
+      $('askCancel').onclick = null
+      $('askInput').onkeydown = null
+      resolve(value)
+    }
+    $('askOk').onclick = () => done($('askInput').value.trim() || null)
+    $('askCancel').onclick = () => done(null)
+    $('askInput').onkeydown = (e) => {
+      if (e.key === 'Enter') done($('askInput').value.trim() || null)
+      if (e.key === 'Escape') done(null)
+    }
+  })
+}
+
+function showProblem (message, detail) {
+  $('problemText').textContent = message || '알 수 없는 오류입니다.'
+  const box = $('problemDetail')
+  box.textContent = detail || ''
+  box.classList.toggle('hidden', !detail)
+  $('problem').classList.remove('hidden')
+}
+
+// ── 설치 화면 ─────────────────────────────────────────────────────────────────
+function setStep (step, status, detail) {
+  const li = document.querySelector(`.steps li[data-step="${step}"]`)
+  if (!li) return
+  li.classList.remove('run', 'done')
+  if (status) li.classList.add(status)
+  if (detail) li.querySelector('.detail').textContent = detail
+}
+
+async function refreshLocation () {
+  const place = await api.location()
+  $('dataDir').textContent = place.dataDir + (place.freeGb === null ? '' : `  (여유 ${place.freeGb}GB)`)
+}
+
+async function refreshPreflight () {
+  const check = await api.checkSetup()
+  const box = $('preflight')
+  const lines = [...check.problems, ...check.warnings]
+  box.className = 'preflight' + (check.problems.length ? ' bad' : check.warnings.length ? ' warn' : '')
+  box.textContent = lines.join('\n\n')
+  box.classList.toggle('hidden', !lines.length)
+  $('setupStart').disabled = !check.ok
+
+  // 같은 부품이 이미 컴퓨터에 있으면 다시 받을 이유가 없다.
+  const adopt = $('adopt')
+  if (check.adoptable) {
+    $('adoptPath').textContent = `${check.adoptable.python} (PyTorch ${check.adoptable.torch})`
+    adopt.classList.remove('hidden')
+  } else {
+    adopt.classList.add('hidden')
+  }
+  if (check.gpu && check.gpu.ok) setStep('gpu', 'done', `${check.gpu.name} (${check.gpu.vramGb}GB)`)
+  return check
+}
+
+function wireSetup () {
+  api.onSetupStep(({ step, status, detail }) => setStep(step, status, detail))
+
+  api.onSetupProgress(({ step, got, total }) => {
+    if (!total) return
+    setStep(step, 'run', `${gb(got)} / ${gb(total)}`)
+    // 모델(8GB)과 파이토치(3GB)가 대부분의 시간을 먹는다. 막대는 그 둘만 따라간다.
+    if (step === 'models' || step === 'uv') {
+      $('setupBar').style.width = `${Math.min(100, got / total * 100)}%`
+    }
+  })
+
+  api.onSetupLog((line) => {
+    const box = $('setupLog')
+    box.textContent = `${box.textContent}${line}\n`.split('\n').slice(-400).join('\n')
+    box.scrollTop = box.scrollHeight
+  })
+
+  $('setupLogToggle').onclick = () => $('setupLog').classList.toggle('hidden')
+
+  $('pickLocation').onclick = async () => {
+    const picked = await api.pickLocation()
+    if (picked.canceled) return
+    if (!picked.ok) return toast(picked.message)
+    await refreshLocation()
+    await refreshPreflight()
+  }
+
+  $('adoptUse').onclick = async () => {
+    $('adoptUse').disabled = true
+    const result = await api.adoptRuntime()
+    $('adoptUse').disabled = false
+    if (!result.ok) return showProblem(result.message)
+    toast('기존 실행환경을 가져왔습니다.')
+    $('setup').classList.add('hidden')
+    await boot()
+  }
+
+  $('setupStart').onclick = async () => {
+    $('setupStart').disabled = true
+    $('setupError').classList.add('hidden')
+    $('setupStart').textContent = '설치 중…'
+    const result = await api.runSetup()
+    $('setupStart').textContent = '설치 시작'
+    if (!result.ok) {
+      $('setupError').textContent = result.message
+      $('setupError').classList.remove('hidden')
+      $('setupStart').disabled = false
+      $('setupLog').classList.remove('hidden')
+      return
+    }
+    $('setup').classList.add('hidden')
+    await boot()
+  }
+}
+
+// ── 프로젝트 ──────────────────────────────────────────────────────────────────
+async function refreshProjects () {
+  const { current, projects } = await api.projects()
+  currentProject = current
+  const select = $('project')
+  select.innerHTML = ''
+  for (const item of projects) {
+    const option = document.createElement('option')
+    option.value = item.name
+    option.textContent = `${item.name} (${item.songs})`
+    select.appendChild(option)
+  }
+  select.value = current
+}
+
+function wireProjects () {
+  $('project').onchange = async (e) => {
+    await api.selectProject(e.target.value)
+    await refreshProjects()
+    await refreshSongs()
+  }
+
+  $('newProject').onclick = async () => {
+    const name = await ask('새 프로젝트 이름')
+    if (!name) return
+    const result = await api.createProject(name)
+    if (!result.ok) return toast(result.message)
+    await refreshProjects()
+    await refreshSongs()
+  }
+
+  $('renameProject').onclick = async () => {
+    const name = await ask('프로젝트 이름 변경', currentProject)
+    if (!name) return
+    const result = await api.renameProject(currentProject, name)
+    if (!result.ok) return toast(result.message)
+    await refreshProjects()
+    await refreshSongs()
+  }
+
+  $('deleteProject').onclick = async () => {
+    const name = currentProject
+    // 곡이 통째로 사라지는 일이라 이름을 다시 받아 확인한다.
+    const typed = await ask(`"${name}" 프로젝트를 휴지통으로 보냅니다.\n확인하려면 이름을 그대로 입력하세요.`)
+    if (typed !== name) return toast('취소했습니다.')
+    const result = await api.deleteProject(name)
+    if (!result.ok) return toast(result.message)
+    toast('휴지통으로 보냈습니다.')
+    await refreshProjects()
+    await refreshSongs()
+  }
+
+  $('openFolder').onclick = async () => {
+    const state = await api.state()
+    if (state.songsDir) api.open(state.songsDir)
+  }
+}
+
+// ── 곡 보관함 ─────────────────────────────────────────────────────────────────
+function songLine (song) {
+  const row = document.createElement('div')
+  row.className = 'song' + (song.unfinished ? ' unfinished' : '') +
+    (selected && selected.dir === song.dir ? ' on' : '')
+  const when = String(song.createdAt || '').replace('T', ' ').slice(0, 16)
+  const length = song.seconds ? `${Math.floor(song.seconds / 60)}:${String(Math.round(song.seconds % 60)).padStart(2, '0')}` : ''
+  row.innerHTML = `
+    <div class="t"><span></span><span class="tag"></span></div>
+    <div class="s"></div>`
+  row.querySelector('.t span').textContent = song.title || '무제'
+  row.querySelector('.tag').textContent = song.unfinished ? '미완성' : (song.format || '').toUpperCase()
+  row.querySelector('.s').textContent = [when, length].filter(Boolean).join(' · ')
+
+  row.onclick = () => {
+    if (song.unfinished) return resumeSong(song)
+    selectSong(song)
+  }
+  return row
+}
+
+async function refreshSongs () {
+  songs = await api.listSongs()
+  const box = $('songs')
+  box.innerHTML = ''
+
+  // 만드는 중인 곡과 대기 중인 곡을 보관함 맨 위에 보여준다.
+  if (runningJob) {
+    const row = document.createElement('div')
+    row.className = 'song'
+    row.innerHTML = '<div class="t"><span></span><span class="tag">생성 중</span></div>'
+    row.querySelector('.t span').textContent = runningJob.title
+    box.appendChild(row)
+  }
+
+  if (!songs.length && !runningJob) {
+    const empty = document.createElement('div')
+    empty.className = 'empty'
+    empty.textContent = '아직 만든 곡이 없습니다.\n왼쪽에 가사와 스타일을 적고 [곡 만들기]를 누르세요.'
+    empty.style.whiteSpace = 'pre-line'
+    box.appendChild(empty)
+  }
+
+  for (const song of songs) box.appendChild(songLine(song))
+
+  // 골라뒀던 곡이 사라졌으면 재생기를 접는다.
+  if (selected && !songs.some((s) => s.dir === selected.dir)) {
+    selected = null
+    $('player').classList.add('hidden')
+    $('audio').src = ''
+  }
+}
+
+function selectSong (song) {
+  selected = song
+  $('player').classList.remove('hidden')
+  $('nowTitle').textContent = song.title || '무제'
+  $('audio').src = song.audioUrl || ''
+  $('songMeta').textContent = [
+    `스타일: ${song.style || '—'}`,
+    `시드: ${song.seed ?? '—'}`,
+    `길이: ${song.seconds ? `${song.seconds}초` : '—'}`,
+    `만드는 데 걸린 시간: ${song.wallSeconds ? mmss(song.wallSeconds) : '—'}`,
+    `폴더: ${song.dir}`
+  ].join('\n')
+  refreshSongs()
+}
+
+async function resumeSong (song) {
+  const go = await ask(`"${song.title}" 은(는) 만들다 만 곡입니다.\n이어서 만들려면 "이어"라고 입력하세요.`)
+  if (go !== '이어') return
+  const result = await api.resume(song.dir)
+  if (!result.ok) return showProblem(result.message)
+  toast('이어서 만듭니다.')
+}
+
+function wireLibrary () {
+  $('renameSong').onclick = async () => {
+    if (!selected) return
+    const name = await ask('곡 이름 변경', selected.title)
+    if (!name) return
+    await api.rename(selected.dir, name)
+    selected.title = name
+    $('nowTitle').textContent = name
+    await refreshSongs()
+  }
+
+  $('revealSong').onclick = () => selected && api.reveal(selected.dir)
+
+  $('exportMp3').onclick = async () => {
+    if (!selected) return
+    const result = await api.exportMp3(selected.dir, selected.title)
+    if (result.canceled) return
+    toast(result.ok ? `저장했습니다: ${result.path}` : result.message)
+  }
+
+  $('deleteSong').onclick = async () => {
+    if (!selected) return
+    const typed = await ask(`"${selected.title}" 을(를) 휴지통으로 보냅니다.\n확인하려면 "삭제"라고 입력하세요.`)
+    if (typed !== '삭제') return
+    // 재생 중이면 파일을 물고 있어서 삭제가 막힌다. 먼저 놓아준다.
+    $('audio').pause()
+    $('audio').src = ''
+    await api.remove(selected.dir)
+    selected = null
+    $('player').classList.add('hidden')
+    await refreshSongs()
+    await refreshProjects()
+  }
+}
+
+// ── 설정 ──────────────────────────────────────────────────────────────────────
+async function refreshSettings () {
+  const settings = await api.getSettings()
+  $('autoMp3').checked = settings.autoMp3
+  $('dropWav').checked = settings.dropWav
+  $('dropWav').disabled = !settings.autoMp3
+  $('updateCheck').checked = settings.updateCheck
+  $('updateRepo').value = settings.updateRepo
+  learned = settings.speed || null
+  plan = estimate($('lyrics').value, { firstRun: !warmed })
+  $('speedInfo').textContent = learned
+    ? `곡 ${learned.samples}개를 만들면서 잰 값으로 예상 시간을 맞추고 있습니다 ` +
+      `(노래 생성 초당 ${Math.round(learned.semantic)}토큰).`
+    : '아직 측정값이 없습니다. 곡을 만들수록 예상 시간이 정확해집니다.'
+  return settings
+}
+
+function wireSettings () {
+  const save = async () => {
+    const next = await api.setSettings({
+      autoMp3: $('autoMp3').checked,
+      dropWav: $('dropWav').checked,
+      updateCheck: $('updateCheck').checked,
+      updateRepo: $('updateRepo').value
+    })
+    $('dropWav').checked = next.dropWav
+    $('dropWav').disabled = !next.autoMp3
+  }
+  $('autoMp3').onchange = save
+  $('dropWav').onchange = save
+
+  $('settingsBtn').onclick = async () => {
+    await refreshSettings()
+    $('settings').classList.remove('hidden')
+  }
+  $('settingsSave').onclick = async () => {
+    await save()
+    $('settings').classList.add('hidden')
+    toast('저장했습니다.')
+  }
+  $('settingsClose').onclick = () => $('settings').classList.add('hidden')
+  $('openLog').onclick = () => api.openLog()
+
+  $('resetSpeed').onclick = async () => {
+    await api.resetSpeed()
+    await refreshSettings()
+    updateHint()
+    toast('측정값을 지웠습니다. 다음 곡부터 다시 잽니다.')
+  }
+
+  $('compact').onclick = async () => {
+    const typed = await ask('이미 만든 곡을 MP3로 바꾸고 중간 파일을 지웁니다.\n계속하려면 "정리"라고 입력하세요.')
+    if (typed !== '정리') return
+    toast('정리 중입니다…', 60000)
+    const result = await api.compact()
+    if (!result.ok) return toast(result.message)
+    toast(`${result.converted}곡 변환, ${result.savedGb}GB 절약했습니다.`)
+    if (result.failures.length) showProblem('일부 곡을 정리하지 못했습니다.', result.failures.join('\n'))
+    await refreshSongs()
+  }
+
+  $('moveModels').onclick = async () => {
+    const result = await api.moveModels()
+    if (result.canceled) return
+    toast(result.ok ? `옮겼습니다: ${result.path}` : result.message)
+  }
+
+  $('lyricsHelp').onclick = () => showProblemAsHelp()
+}
+
+function showProblemAsHelp () {
+  $('problemText').textContent =
+    '가사를 구간으로 나누면 곡 구조가 잡힙니다. 대괄호 태그를 줄 하나에 단독으로 적으세요.\n\n' +
+    '[Intro]  전주\n[Verse]  절\n[Pre-Chorus]  후렴 직전\n[Chorus]  후렴\n[Bridge]  브릿지\n[Outro]  후주\n\n' +
+    '· 한국어로 [후렴] 처럼 적어도 자동으로 바꿔 줍니다.\n' +
+    '· [Verse 1] 처럼 번호를 붙이면 [Verse] 로 정리됩니다.\n' +
+    '· 가사 맨 위의 # 제목 줄은 자동으로 빠집니다.\n' +
+    '· 가사가 길수록 곡이 길어지고 생성 시간도 늘어납니다.'
+  $('problemDetail').classList.add('hidden')
+  document.querySelector('#problem h1').textContent = '구간 태그 안내'
+  $('problem').classList.remove('hidden')
+}
+
+// ── 대기열 ────────────────────────────────────────────────────────────────────
+function renderQueue () {
+  const box = $('queueBox')
+  const list = $('queueList')
+  list.innerHTML = ''
+  if (!queueState.waiting.length) {
+    box.classList.add('hidden')
+    return
+  }
+  box.classList.remove('hidden')
+  for (const item of queueState.waiting) {
+    const li = document.createElement('li')
+    const name = document.createElement('span')
+    name.textContent = item.title
+    const drop = document.createElement('button')
+    drop.className = 'ghost small'
+    drop.textContent = '빼기'
+    drop.onclick = async () => {
+      const result = await api.queueRemove(item.jobId)
+      if (!result.ok) toast(result.message)
+    }
+    li.append(name, drop)
+    list.appendChild(li)
+  }
+}
+
+// ── 생성 ──────────────────────────────────────────────────────────────────────
+function stageProgress (stage, fraction) {
+  let base = 0
+  for (const key of ORDER) {
+    if (key === stage) break
+    base += plan.weights[key]
+  }
+  // 1.0 은 "끝났다"는 뜻으로 아껴 둔다. 마지막 단계에서 막대가 미리 차면 안 된다.
+  return Math.min(0.995, base + plan.weights[stage] * clamp(fraction, 0, 1))
+}
+
+function showProgress (stage, fraction, note) {
+  $('run').classList.remove('hidden')
+  $('runStage').textContent = STAGES[stage] || stage
+  const done = stageProgress(stage, fraction)
+  $('runBar').style.width = `${done * 100}%`
+  const left = plan.total * (1 - done)
+  $('runNote').textContent = note || `남은 시간 약 ${mmss(left)}`
+}
+
+function setRunning (on, title) {
+  running = on
+  $('generate').disabled = on
+  $('generate').textContent = on ? '만드는 중…' : '곡 만들기'
+  $('run').classList.toggle('hidden', !on)
+  if (on) $('runTitle').textContent = title || ''
+  else $('runBar').style.width = '0%'
+}
+
+function wireGenerate () {
+  const box = $('presets')
+  PRESETS.forEach((preset) => {
+    const button = document.createElement('button')
+    button.textContent = preset.name
+    button.onclick = () => {
+      $('style').value = preset.style
+      for (const other of box.children) other.classList.remove('on')
+      button.classList.add('on')
+      updateHint()
+    }
+    box.appendChild(button)
+  })
+
+  updateHint = () => {
+    const instrumental = $('instrumental').checked
+    const lyrics = instrumental ? INSTRUMENTAL_LYRICS : $('lyrics').value
+    const guess = estimate(lyrics, { firstRun: !warmed })
+    $('generateHint').textContent = `예상 ${mmss(guess.total)}` + (warmed ? '' : ' (첫 곡은 모델 적재가 더 걸립니다)')
+  }
+  $('lyrics').oninput = updateHint
+  $('instrumental').onchange = () => {
+    // 연주곡이면 가사칸을 잠그고, 왜 잠겼는지 보이게 한다.
+    $('lyrics').disabled = $('instrumental').checked
+    $('lyricsHint').textContent = $('instrumental').checked
+      ? '연주곡 모드입니다. 가사 대신 구간 구조만 모델에 넘깁니다.'
+      : '[Verse] [Pre-Chorus] [Chorus] [Bridge] 로 구간을 나누면 곡 구조가 좋아집니다.'
+    updateHint()
+  }
+  updateHint()
+
+  $('generate').onclick = async () => {
+    const instrumental = $('instrumental').checked
+    const style = $('style').value.trim()
+    if (!style) return toast('스타일 프롬프트를 적어주세요.')
+
+    let lyrics = INSTRUMENTAL_LYRICS
+    if (!instrumental) {
+      const raw = $('lyrics').value.trim()
+      if (!raw) return toast('가사를 적거나 [가사 없이]를 켜주세요.')
+      const cleaned = cleanLyrics(raw)
+      lyrics = cleaned.text
+      if (cleaned.notes.length) toast(cleaned.notes.join(' · '), 4000)
+    }
+
+    const guess = estimate(lyrics, { firstRun: !warmed })
+    const payload = {
+      title: $('title').value.trim() || '무제',
+      style: instrumental ? instrumentalStyle(style) : style,
+      lyrics,
+      instrumental,
+      seed: $('seed').value.trim(),
+      // 보정 전 토큰 예측. 끝나고 실제값과 견줘 추정식을 다듬는 데 쓴다.
+      predict: guess.base
+    }
+
+    const result = await api.generate(payload)
+    if (!result.ok) return showProblem(result.message)
+    // 대기 중인 곡도 자기 길이에 맞는 추정치를 갖고 있어야 순서가 와도 막대가 맞는다.
+    plans.set(result.jobId, guess)
+    toast(result.position === 0 ? '곡을 만들기 시작합니다.' : `대기열에 넣었습니다 (${result.position}번째).`)
+    await refreshSongs()
+  }
+
+  $('cancel').onclick = async () => {
+    await api.cancel()
+    toast('취소 요청을 보냈습니다. 지금 단계가 끝나면 멈춥니다.', 4000)
+  }
+
+  $('queueClear').onclick = async () => {
+    const result = await api.queueClear()
+    toast(`${result.removed}곡을 대기열에서 뺐습니다.`)
+  }
+}
+
+function wireJobEvents () {
+  api.onQueue((state) => {
+    queueState = state
+    renderQueue()
+  })
+
+  api.onJobStarted(({ jobId, title }) => {
+    runningJob = { jobId, title }
+    plan = plans.get(jobId) || plan
+    setRunning(true, title)
+    showProgress('plan', 0, '준비 중…')
+    refreshSongs()
+  })
+
+  api.onJobEvent((event) => {
+    if (event.type === 'notice') return toast(event.message, 5000)
+
+    if (event.type === 'stage' && event.stage === 'load') {
+      // 모델 적재는 단계 막대에 없다. 문구로만 알린다.
+      if (event.status === 'start') showProgress('plan', 0, '음악 모델을 메모리에 올리는 중… (처음 한 번, 약 1분)')
+      else warmed = true
+      return
+    }
+    if (event.type === 'stage' && event.status === 'start') {
+      showProgress(event.stage, 0)
+      return
+    }
+    if (event.type === 'stage' && event.status === 'done') {
+      showProgress(event.stage, 1)
+      return
+    }
+    if (event.type === 'progress') {
+      if (event.stage === 'synth' && event.steps) {
+        showProgress('synth', event.step / event.steps)
+      } else if (event.stage && plan.tokens[event.stage]) {
+        showProgress(event.stage, event.tokens / plan.tokens[event.stage],
+          event.rate ? `초당 ${event.rate} 토큰` : undefined)
+      }
+    }
+  })
+
+  api.onJobDone(async (song) => {
+    plans.delete(runningJob && runningJob.jobId)
+    runningJob = null
+    warmed = true
+    setRunning(false)
+    toast(`"${song.title}" 완성! (${mmss(song.wallSeconds)})`, 5000)
+    // 방금 곡에서 잰 속도를 반영해 다음 예상 시간을 고친다.
+    await refreshSettings()
+    updateHint()
+    await refreshSongs()
+    await refreshProjects()
+    const made = songs.find((s) => s.dir === song.dir)
+    if (made) selectSong(made)
+  })
+
+  api.onJobError((event) => {
+    plans.delete(runningJob && runningJob.jobId)
+    runningJob = null
+    setRunning(false)
+    refreshSongs()
+    if (event.cancelled) return toast('생성을 취소했습니다.')
+    showProblem(event.message, event.detail)
+  })
+
+  api.onWorkerLog((line) => {
+    const box = $('setupLog')
+    box.textContent = `${box.textContent}${line}\n`.split('\n').slice(-400).join('\n')
+  })
+}
+
+function wireProblem () {
+  $('problemClose').onclick = () => {
+    $('problem').classList.add('hidden')
+    document.querySelector('#problem h1').textContent = '곡을 만들지 못했습니다'
+  }
+  $('problemCopy').onclick = () => {
+    const text = `${$('problemText').textContent}\n\n${$('problemDetail').textContent}`.trim()
+    navigator.clipboard.writeText(text).then(() => toast('복사했습니다.'))
+  }
+  $('problemLog').onclick = () => api.openLog()
+}
+
+// ── 업데이트 ──────────────────────────────────────────────────────────────────
+async function checkUpdate () {
+  const found = await api.checkUpdate()
+  if (!found) return
+  $('updateFrom').textContent = `현재 ${found.current}`
+  $('updateTo').textContent = found.version
+  const notes = $('updateNotes')
+  notes.textContent = found.notes || ''
+  notes.classList.toggle('hidden', !found.notes)
+  $('update').classList.remove('hidden')
+
+  $('updateLater').onclick = () => $('update').classList.add('hidden')
+  $('updateNow').onclick = async () => {
+    $('updateNow').disabled = true
+    $('updateBarWrap').classList.remove('hidden')
+    $('updateStatus').classList.remove('hidden')
+    $('updateStatus').textContent = '내려받는 중…'
+    const result = await api.installUpdate(found)
+    if (result.opened) {
+      $('updateStatus').textContent = '브라우저에서 릴리스 페이지를 열었습니다.'
+      $('updateNow').disabled = false
+      return
+    }
+    if (!result.ok) {
+      $('updateStatus').textContent = `실패: ${result.error}`
+      $('updateNow').disabled = false
+      return
+    }
+    $('updateStatus').textContent = '설치를 시작합니다. 프로그램이 곧 닫힙니다…'
+  }
+  api.onUpdateProgress((ratio) => {
+    $('updateBar').style.width = `${Math.round(ratio * 100)}%`
+  })
+}
+
+// ── 시작 ──────────────────────────────────────────────────────────────────────
+async function boot () {
+  const state = await api.state()
+  $('versionInfo').textContent = `버전 ${state.version}`
+  if (state.gpu && state.gpu.ok) {
+    $('gpuInfo').textContent = `${state.gpu.name} · ${state.gpu.vramGb}GB`
+  }
+
+  if (!state.ready) {
+    $('setup').classList.remove('hidden')
+    await refreshLocation()
+    await refreshPreflight()
+    return
+  }
+
+  await refreshProjects()
+  await refreshSettings()
+  await refreshSongs()
+  queueState = await api.queue()
+  renderQueue()
+  if (queueState.current) {
+    runningJob = queueState.current
+    setRunning(true, queueState.current.title)
+  }
+  checkUpdate() // 실패해도 앱은 그대로 쓴다 — 기다리지 않는다
+}
+
+wireSetup()
+wireProjects()
+wireLibrary()
+wireSettings()
+wireGenerate()
+wireJobEvents()
+wireProblem()
+boot().catch((error) => showProblem(`시작하지 못했습니다: ${error.message}`))
