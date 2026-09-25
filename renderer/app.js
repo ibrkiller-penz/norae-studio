@@ -877,7 +877,7 @@ function wireScore () {
       `조성      ${info.key}`,
       `마디      ${info.bars}마디 (${info.seconds}초)`,
       info.chordsOnly
-        ? '멜로디    없음 — AI 가 새로 짓습니다'
+        ? '멜로디    가져오지 않음 — AI 가 새로 짓고 가사를 부릅니다'
         : `음        ${info.notes}개` + (info.octaveShift ? ` (악보 표기에 맞춰 ${info.octaveShift}옥타브 올림)` : ''),
       `코드      ${(info.chords || []).join(' - ') || '—'}`,
       info.separated ? '보컬 분리  했음' : '보컬 분리  실패 — 정확도가 낮습니다'
@@ -889,16 +889,24 @@ function wireScore () {
   $('scoreUse').onclick = () => {
     if (!scoreResult) return
     const name = (scoreFile || '').split(/[\\/]/).pop().replace(/\.[^.]+$/, '')
-    coverScore = {
-      dir: null,
-      abc: scoreResult.abc,
-      title: name,
-      lyrics: '',
-      style: ''
-    }
     if (!$('title').value.trim()) $('title').value = `${name} (커버)`.slice(0, 60)
-    $('coverNote').textContent = `악보 준비됨: ${name}`
     $('score').classList.add('hidden')
+
+    if (scoreResult.info && scoreResult.info.chordsOnly) {
+      // 코드만 가져올 때 악보를 넘기면 안 된다. 보컬 성부가 쉼표뿐인 악보는 워커가
+      // 연주곡을 만들 때 쓰는 바로 그 꼴이라, 노래를 아예 안 부른다.
+      // 화성·빠르기는 말로 넘기고 가락은 모델이 짓게 한다.
+      coverScore = null
+      setMode('new')
+      const existing = $('style').value.trim()
+      const measured = scoreResult.info.prompt || ''
+      $('style').value = existing ? `${existing}, ${measured}` : measured
+      updateHint()
+      return toast('원곡의 화성·빠르기를 스타일에 넣었습니다. 장르와 보컬을 앞에 덧붙이세요.', 6000)
+    }
+
+    coverScore = { dir: null, abc: scoreResult.abc, title: name, lyrics: '', style: '' }
+    $('coverNote').textContent = `악보 준비됨: ${name}`
     updateHint()
     toast('가사와 스타일을 적고 [커버 만들기]를 누르세요.', 5000)
   }
@@ -1089,6 +1097,27 @@ function wireGenerate () {
     const guess = estimate(lyrics, { firstRun: !warmed, skipPlan: mode === 'cover' })
     $('generateHint').textContent = `예상 ${mmss(guess.total)}` + (warmed ? '' : ' (첫 곡은 모델 적재가 더 걸립니다)')
   }
+  // 구간 태그가 없으면 가사가 악보에 붙을 자리를 모른다. 붙여 넣는 즉시 잡아 준다.
+  // 결과는 가사칸에 그대로 써서 사람이 고칠 수 있게 둔다.
+  const applyAutoTag = (quiet = false) => {
+    const raw = $('lyrics').value
+    if (!raw.trim()) return false
+    const result = autoTagLyrics(raw)
+    if (!result.tagged) {
+      if (!quiet) toast(result.note || '이미 구간 태그가 있습니다.')
+      return false
+    }
+    $('lyrics').value = result.text
+    updateHint()
+    if (!quiet) toast(`구간을 붙였습니다 — ${result.sections.join(' · ')}. ${result.note}`, 6000)
+    return true
+  }
+
+  $('autoTag').onclick = () => applyAutoTag(false)
+
+  // 붙여 넣기는 브라우저가 값을 채운 뒤에 처리해야 한다.
+  $('lyrics').addEventListener('paste', () => setTimeout(() => applyAutoTag(false), 0))
+
   $('lyrics').oninput = updateHint
   $('instrumental').onchange = () => {
     // 연주곡이면 가사칸을 잠그고, 왜 잠겼는지 보이게 한다.
@@ -1107,6 +1136,8 @@ function wireGenerate () {
 
     let lyrics = INSTRUMENTAL_LYRICS
     if (!instrumental) {
+      // 태그가 없으면 여기서라도 붙인다. 없는 채로 보내면 가사가 악보에 엉뚱하게 붙는다.
+      applyAutoTag(true)
       const raw = $('lyrics').value.trim() ||
         (mode === 'cover' && coverScore ? coverScore.lyrics : '')
       if (!raw) return toast('가사를 적거나 [가사 없이]를 켜주세요.')

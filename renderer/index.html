@@ -104,6 +104,7 @@
         <div class="head-actions">
           <label class="inst-toggle"><input type="checkbox" id="instrumental"> 가사 없이 (연주곡)</label>
           <input id="title" placeholder="곡 제목" maxlength="60">
+          <button id="autoTag" class="ghost small">구간 자동 표시</button>
           <button id="lyricsHelp" class="ghost small">태그 안내</button>
         </div>
       </div>
@@ -284,8 +285,8 @@
       <label class="row-check"><input type="radio" name="scoreMode" value="full" checked>
         <span><b>멜로디까지</b> — 원곡의 가락을 따라갑니다. 진짜 커버에 가깝습니다.</span></label>
       <label class="row-check"><input type="radio" name="scoreMode" value="chords">
-        <span><b>코드·템포만</b> — 화성과 빠르기만 가져오고 가락은 AI 가 새로 짓습니다.
-          멜로디 채보보다 정확합니다.</span></label>
+        <span><b>코드·템포만</b> — 원곡의 화성·빠르기·조성만 가져와 스타일에 넣습니다.
+          가락은 AI 가 새로 짓고 <b>가사를 제대로 부릅니다.</b> 멜로디 채보보다 훨씬 안정적입니다.</span></label>
     </div>
 
     <div id="scoreInstall" class="adopt hidden">
@@ -377,6 +378,7 @@
 </div>
 
 <div id="toast" class="toast hidden"></div>
+<script src="lyrics.js"></script>
 <script src="app.js"></script>
 </body>
 </html>

@@ -31,12 +31,15 @@ def main() -> int:
     parser.add_argument("out", nargs="?", default=str(HERE.parent / "smoke-out"))
     parser.add_argument("--abc", help="커버: 이 악보 파일을 그대로 쓴다 (작곡 단계를 건너뛴다)")
     parser.add_argument("--style", help="스타일 프롬프트를 바꾼다")
+    parser.add_argument("--lyrics-file", help="가사를 이 파일에서 읽는다")
     args = parser.parse_args()
 
     out = Path(args.out)
     out.mkdir(parents=True, exist_ok=True)
     abc = Path(args.abc).read_text(encoding="utf-8") if args.abc else None
     style = args.style or STYLE
+    lyrics = (Path(args.lyrics_file).read_text(encoding="utf-8")
+              if args.lyrics_file else LYRICS)
 
     env = {**os.environ, "PYTHONIOENCODING": "utf-8", "PYTHONUTF8": "1"}
     proc = subprocess.Popen(
@@ -45,7 +48,7 @@ def main() -> int:
         env=env, text=True, encoding="utf-8", errors="replace", bufsize=1)
 
     job = {"cmd": "generate", "jobId": "smoke", "outDir": str(out), "id": "song",
-           "style": style, "lyrics": LYRICS, "instrumental": False,
+           "style": style, "lyrics": lyrics, "instrumental": False,
            "abc": abc, "cot": "full", "seed": 12345}
     if abc:
         print(f"커버 모드: 악보 {len(abc)}자를 그대로 씁니다", flush=True)

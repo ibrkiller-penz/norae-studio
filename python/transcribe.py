@@ -355,6 +355,34 @@ def transpose_to_notation(events):
     return [(s, l, None if n is None else n + shift) for s, l, n in events], shift
 
 
+def describe_tempo(bpm: float) -> str:
+    if bpm < 70:
+        return "slow ballad tempo"
+    if bpm < 95:
+        return "relaxed mid tempo"
+    if bpm < 120:
+        return "steady groove"
+    if bpm < 140:
+        return "upbeat dance tempo"
+    return "fast energetic tempo"
+
+
+def to_style_prompt(bpm, key, mode, chords) -> str:
+    """잰 값을 YuE2 가 알아듣는 영어 스타일 설명으로 옮긴다.
+
+    악보를 넘기는 대신 이 말을 넘기면, 가락은 모델이 짓고 가사는 제대로 불린다.
+    """
+    seen = []
+    for chord in chords:
+        if chord and (not seen or seen[-1] != chord):
+            seen.append(chord)
+    parts = [describe_tempo(bpm), f"{spell(key)} {mode}"]
+    if seen:
+        parts.append("chord progression " + " - ".join(seen[:4]))
+    parts.append(f"{int(round(bpm))} BPM")
+    return ", ".join(parts)
+
+
 def write_abc(events, chords, key, mode, bpm, title="") -> str:
     """음 목록과 코드를 YuE2 가 읽는 ABC 로 옮긴다."""
     total_units = max((start + length for start, length, _ in events), default=0)
@@ -446,15 +474,22 @@ def transcribe(path: Path, workdir: Path, separate: bool, max_seconds: float,
     bars = max(1, math.ceil(total_units / UNITS_PER_BAR))
     chords = chords_per_bar(chroma, sr, hop, bpm, bars, beats)
 
-    # 코드는 멜로디보다 훨씬 정확하게 나온다. "코드만" 모드는 화성과 템포만 넘기고
-    # 멜로디는 YuE2 가 새로 짓게 한다. 원곡의 틀 위에서 새 노래가 나온다.
+    # "코드만" 모드에서 악보를 넘기면 안 된다.
+    #
+    # 보컬 성부를 전부 쉼표로 채운 악보를 주면, 그건 워커가 *연주곡*을 만들 때 쓰는
+    # 바로 그 수법이다(silence_vocals). 부를 음이 없으니 모델은 노래를 만들지 않는다.
+    # "가락은 AI 가 새로 짓는다"고 해놓고 실제로는 노래가 빠진 반주만 나왔다.
+    #
+    # 화성과 빠르기만 물려주고 싶으면 악보를 아예 주지 말고, 잰 값을 말로 적어
+    # 스타일 프롬프트에 넣어야 한다. 그래야 YuE2 가 가락을 직접 짓고 가사를 부른다.
     shift = 0
+    prompt = None
     if chords_only:
-        events = [(bar * UNITS_PER_BAR, UNITS_PER_BAR, None) for bar in range(bars)]
+        abc = None
+        prompt = to_style_prompt(bpm, key, mode, chords)
     else:
         events, shift = transpose_to_notation(events)
-
-    abc = write_abc(events, chords, key, mode, bpm, title=path.stem)
+        abc = write_abc(events, chords, key, mode, bpm, title=path.stem)
     info = {
         "bpm": round(bpm, 1),
         "key": f"{spell(key)} {mode}",
@@ -464,6 +499,7 @@ def transcribe(path: Path, workdir: Path, separate: bool, max_seconds: float,
         "separated": used_separation,
         "chordsOnly": chords_only,
         "octaveShift": shift // 12,
+        "prompt": prompt,
         "seconds": round(len(mix_y) / sr, 1),
         "chords": [c for c in chords if c][:8],
     }
@@ -491,8 +527,11 @@ def main() -> int:
     try:
         abc, info = transcribe(source, workdir, not args.no_separate, args.seconds,
                                args.chords_only)
-        (workdir / "transcribed.abc").write_text(abc, encoding="utf-8")
-        emit(type="done", abc=abc, info=info, path=str(workdir / "transcribed.abc"))
+        target = None
+        if abc:
+            target = workdir / "transcribed.abc"
+            target.write_text(abc, encoding="utf-8")
+        emit(type="done", abc=abc, info=info, path=str(target) if target else None)
         return 0
     except Exception as exc:  # noqa: BLE001
         import traceback
