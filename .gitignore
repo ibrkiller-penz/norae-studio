@@ -6,3 +6,4 @@ cover-out/
 __pycache__/
 *.pyc
 .firebase/
+preview.html
