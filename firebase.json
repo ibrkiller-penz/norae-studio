@@ -8,12 +8,14 @@
         "source": "**",
         "headers": [
           { "key": "X-Content-Type-Options", "value": "nosniff" },
-          { "key": "Referrer-Policy", "value": "no-referrer" }
+          { "key": "Referrer-Policy", "value": "no-referrer" },
+          {
+            "//": "한 장짜리 페이지다. 캐시해서 얻을 게 없고, 새 판을 낼 때마다 링크가 바뀐다.",
+            "//2": "규칙을 /index.html 에만 걸었더니 '/' 로 들어오는 사람은 한 시간짜리 캐시를 받았다.",
+            "key": "Cache-Control",
+            "value": "no-cache"
+          }
         ]
-      },
-      {
-        "source": "/index.html",
-        "headers": [{ "key": "Cache-Control", "value": "no-cache" }]
       }
     ]
   }
