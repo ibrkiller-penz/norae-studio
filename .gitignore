@@ -5,3 +5,4 @@ smoke-out/
 cover-out/
 __pycache__/
 *.pyc
+.firebase/
