@@ -202,9 +202,17 @@ class Worker:
         started = time.perf_counter()
 
         pipe = self.ensure_pipe()
+
+        # 커버: 악보를 받아 오면 작곡 단계를 건너뛰고 그 악보를 그대로 쓴다.
+        # 같은 멜로디·코드에 다른 편곡(스타일)이나 다른 가사를 입히는 길이다.
+        abc = (job.get("abc") or "").strip() or None
+        if abc and job.get("instrumental"):
+            # 연주곡 커버는 받은 악보에서 바로 보컬을 지운다. 다시 계획할 필요가 없다.
+            abc = silence_vocals(abc)
+
         request = pipe._request(style=job["style"], lyrics=job["lyrics"],
                                 cot=job.get("cot", "full"), seed=int(seed),
-                                id=job.get("id", "song"))
+                                abc=abc, id=job.get("id", "song"))
 
         counters = {"stage": None, "n": 0, "t0": time.perf_counter(), "last": 0.0}
 
@@ -228,7 +236,8 @@ class Worker:
         else:
             start("plan")
             plan = pipe.plan(request=request, cancelled=self.cancelled, on_token=on_token)
-            if job.get("instrumental") and plan.abc:
+            # 악보를 직접 받은 경우(커버)에는 이미 위에서 보컬을 지웠다. 두 번 하지 않는다.
+            if job.get("instrumental") and plan.abc and not abc:
                 # 같은 악보에서 보컬 성부만 비우고 다시 계획한다.
                 quiet = dataclasses.replace(request, abc=silence_vocals(plan.abc))
                 plan = pipe.plan(request=quiet)

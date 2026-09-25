@@ -80,7 +80,17 @@
 
 <!-- 본문 ----------------------------------------------------------------------->
 <main>
-  <section class="workspace">
+  <section class="workspace has-modes">
+    <!-- 만들기 모드: 새 곡 / 커버 -->
+    <div class="modes">
+      <button class="mode on" data-mode="new">새 곡</button>
+      <button class="mode" data-mode="cover">커버 · 편곡</button>
+      <span id="coverPick" class="cover-pick hidden">
+        <select id="coverSource"></select>
+        <span class="muted tiny" id="coverNote"></span>
+      </span>
+    </div>
+
     <div class="panel lyrics-panel">
       <div class="panel-head">
         <h2>가사</h2>
@@ -167,6 +177,7 @@
         <button id="exportMp3" class="ghost small">MP3 저장</button>
         <button id="renameSong" class="ghost small">이름 변경</button>
         <button id="revealSong" class="ghost small">폴더 열기</button>
+        <button id="coverThis" class="ghost small">이 곡 커버</button>
         <button id="deleteSong" class="ghost small danger">삭제</button>
       </div>
       <details class="meta">
@@ -188,6 +199,18 @@
     </label>
     <p class="muted tiny">본인 GitHub 릴리스에서만 받습니다. 저장소가 비공개거나 릴리스가 없으면
       조용히 넘어갑니다(프로그램은 그대로 동작). 비워 두거나 확인을 끄면 아예 접속하지 않습니다.</p>
+
+    <div class="field">
+      <span class="muted">AI 음악 모델 (YuE2)</span>
+      <p id="modelInfo" class="muted tiny">확인 중…</p>
+      <div class="bar hidden" id="modelBarWrap"><div id="modelBar"></div></div>
+      <div class="option-buttons">
+        <button id="modelCheck" class="ghost small">지금 확인</button>
+        <button id="modelUpdate" class="primary small hidden">새 모델 받기</button>
+      </div>
+    </div>
+    <p class="muted tiny">프로그램 업데이트와는 별개입니다. m-a-p 가 YuE2 가중치를 새로 올리면
+      바뀐 파일만 받습니다. 받는 동안에는 곡을 만들 수 없습니다.</p>
 
     <div class="field">
       <span class="muted">예상 시간 정확도</span>

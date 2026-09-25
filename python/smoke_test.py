@@ -5,6 +5,7 @@
 앱과 똑같은 방식(stdin 에 JSON 한 줄)으로 명령하고, 올라오는 이벤트를 사람이 읽을 수
 있게 찍어 준다. 끝나면 audio.wav 의 크기와 길이를 알려준다.
 """
+import argparse
 import json
 import os
 import subprocess
@@ -26,8 +27,16 @@ STYLE = ("Korean city pop, groovy funk bass, Rhodes electric piano, tight disco 
 
 
 def main() -> int:
-    out = Path(sys.argv[1] if len(sys.argv) > 1 else HERE.parent / "smoke-out")
+    parser = argparse.ArgumentParser(description="워커를 앱 없이 한 번 돌려 본다")
+    parser.add_argument("out", nargs="?", default=str(HERE.parent / "smoke-out"))
+    parser.add_argument("--abc", help="커버: 이 악보 파일을 그대로 쓴다 (작곡 단계를 건너뛴다)")
+    parser.add_argument("--style", help="스타일 프롬프트를 바꾼다")
+    args = parser.parse_args()
+
+    out = Path(args.out)
     out.mkdir(parents=True, exist_ok=True)
+    abc = Path(args.abc).read_text(encoding="utf-8") if args.abc else None
+    style = args.style or STYLE
 
     env = {**os.environ, "PYTHONIOENCODING": "utf-8", "PYTHONUTF8": "1"}
     proc = subprocess.Popen(
@@ -36,8 +45,10 @@ def main() -> int:
         env=env, text=True, encoding="utf-8", errors="replace", bufsize=1)
 
     job = {"cmd": "generate", "jobId": "smoke", "outDir": str(out), "id": "song",
-           "style": STYLE, "lyrics": LYRICS, "instrumental": False,
-           "cot": "full", "seed": 12345}
+           "style": style, "lyrics": LYRICS, "instrumental": False,
+           "abc": abc, "cot": "full", "seed": 12345}
+    if abc:
+        print(f"커버 모드: 악보 {len(abc)}자를 그대로 씁니다", flush=True)
 
     started = time.perf_counter()
     stage_started = {}

@@ -9,7 +9,7 @@
   "scripts": {
     "start": "electron .",
     "dist": "electron-builder --win nsis",
-    "test": "node electron/speed.test.js"
+    "test": "node electron/speed.test.js && node electron/models.test.js"
   },
   "devDependencies": {
     "electron": "^33.2.0",

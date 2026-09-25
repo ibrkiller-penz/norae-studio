@@ -19,6 +19,7 @@ const os = require('os')
 const { pathToFileURL } = require('url')
 const updater = require('./updater')
 const speed = require('./speed')
+const models = require('./models')
 
 const UV_URL = 'https://github.com/astral-sh/uv/releases/latest/download/uv-x86_64-pc-windows-msvc.zip'
 const YUE_URL = 'https://github.com/multimodal-art-projection/YuE/archive/refs/tags/yue2-v0.1.6.zip'
@@ -598,9 +599,16 @@ async function handleWorkerEvent (event) {
 
   meter.track(event)
 
+  // 악보는 커버를 만들 때 다시 쓴다. 완성 뒤 plan/ 폴더는 정리되므로 여기서 붙잡아
+  // meta.json 에 글로 남긴다(몇 KB 짜리 텍스트다).
+  if (event.type === 'stage' && event.stage === 'plan' && event.status === 'done' &&
+      event.abc && currentJob) {
+    currentJob.abc = event.abc
+  }
+
   if (event.type === 'done') {
     await learnSpeed(currentJob && currentJob.predict)
-    const song = await saveSong(event)
+    const song = await saveSong(event, currentJob)
     currentJob = null
     send('job:done', song)
     sendQueue()
@@ -715,7 +723,7 @@ async function autoConvert (dir) {
   }
 }
 
-async function saveSong (event) {
+async function saveSong (event, job) {
   const dir = path.dirname(event.audio)
   // 워커는 사용자가 입력한 제목을 모른 채 meta 를 다시 쓴다.
   // 작업을 시작할 때 이 프로세스가 적어둔 자리표시자를 위에 덮어 되살린다.
@@ -730,7 +738,11 @@ async function saveSong (event) {
     mp3: mp3 || null,
     status: 'done',
     audioUrl: pathToFileURL(audio).href,
-    title: placeholder.title || event.meta.title || event.meta.id
+    title: placeholder.title || event.meta.title || event.meta.id,
+    // 이 곡의 악보. 이게 있어야 나중에 다른 장르로 커버를 만들 수 있다.
+    abc: (job && job.abc) || placeholder.abc || null,
+    // 어느 곡을 커버한 것인지 (원곡 폴더 이름)
+    coverOf: placeholder.coverOf || null
   }
   await fsp.writeFile(path.join(dir, 'meta.json'), JSON.stringify(meta, null, 1), 'utf8')
   await tidySong(dir)
@@ -751,11 +763,13 @@ async function listSongs () {
     const audio = await exists(wav) ? wav : await exists(mp3) ? mp3 : null
     if (!audio && !await resumable(songDir)) continue
     try {
-      const meta = JSON.parse(await fsp.readFile(metaFile, 'utf8'))
+      const { abc, ...meta } = JSON.parse(await fsp.readFile(metaFile, 'utf8'))
       // 주소는 여기서 만든다. '#' 이나 공백, 한글이 든 경로는 인코딩하기 전에는
       // 올바른 file:// 주소가 아니고, <audio> 태그는 주소를 요구한다.
       songs.push({
         ...meta,
+        // 악보 본문은 목록에 싣지 않는다(곡당 수 KB). 커버를 누를 때만 따로 가져온다.
+        canCover: Boolean(abc),
         dir: songDir,
         audio,
         folder: entry.name,
@@ -812,6 +826,8 @@ async function startGeneration (payload) {
     style: payload.style,
     lyrics: payload.lyrics,
     instrumental: Boolean(payload.instrumental),
+    // 커버: 원곡의 악보를 그대로 넘기면 작곡 단계를 건너뛰고 편곡만 새로 한다.
+    abc: payload.abc || null,
     cot: payload.cot || 'full',
     // 시드를 워커가 아니라 여기서 못 박는다. 그래야 meta.json 에 남고,
     // 이어 만들 때 저장된 단계들과 같은 시드를 계속 쓴다.
@@ -821,10 +837,10 @@ async function startGeneration (payload) {
   }
   const title = payload.title || '무제'
   await fsp.writeFile(path.join(outDir, 'meta.json'),
-    JSON.stringify({ title, ...job, status: 'queued' }, null, 1), 'utf8')
+    JSON.stringify({ title, ...job, coverOf: payload.coverOf || null, status: 'queued' }, null, 1), 'utf8')
 
   // 화면이 보낸 "보정 전" 토큰 예측. 끝나고 실제값과 견줘 추정식을 다듬는 데만 쓴다.
-  queue.push({ jobId, outDir, title, job, predict: payload.predict || null })
+  queue.push({ jobId, outDir, title, job, predict: payload.predict || null, abc: job.abc })
   log('작업 대기열 추가', { jobId, title, waiting: queue.length })
   sendQueue()
   pump()
@@ -1009,6 +1025,18 @@ ipcMain.handle('song:rename', async (_e, { dir, title }) => {
 
 ipcMain.handle('song:reveal', (_e, dir) => { shell.openPath(dir); return { ok: true } })
 
+// 커버를 만들 때만 악보를 꺼내 온다. 목록에 매번 싣기에는 곡당 수 KB 라 무겁다.
+ipcMain.handle('song:score', async (_e, dir) => {
+  try {
+    if (!dir.startsWith(await ensureSongsDir())) return { ok: false, message: '알 수 없는 폴더입니다.' }
+    const meta = JSON.parse(await fsp.readFile(path.join(dir, 'meta.json'), 'utf8'))
+    if (!meta.abc) return { ok: false, message: '이 곡에는 악보가 남아 있지 않아 커버를 만들 수 없습니다.' }
+    return { ok: true, abc: meta.abc, lyrics: meta.lyrics || '', style: meta.style || '', title: meta.title }
+  } catch (error) {
+    return { ok: false, message: `악보를 읽지 못했습니다: ${error.message}` }
+  }
+})
+
 ipcMain.handle('song:export', async (_e, { dir, title }) => {
   const settings = await readSettings()
   const target = await dialog.showSaveDialog(win, {
@@ -1133,6 +1161,62 @@ ipcMain.handle('settings:set', async (_e, patch) => {
     updateCheck: next.updateCheck !== false,
     updateRepo: next.updateRepo || updater.DEFAULT_REPO
   }
+})
+
+// ── 모델(가중치) 업데이트 ─────────────────────────────────────────────────────
+// 프로그램 업데이트와는 다른 일이다. m-a-p 가 YuE2 가중치를 새로 올리면 여기서 잡는다.
+ipcMain.handle('models:check', async () => {
+  const p = paths()
+  const result = await models.check(p.hfHome)
+  log('모델 확인', {
+    hasUpdate: result.hasUpdate,
+    missing: result.missing,
+    reachable: result.reachable,
+    repos: result.repos.map((r) => ({ repo: r.repo, local: (r.local || '').slice(0, 7), remote: (r.remote || '').slice(0, 7) }))
+  })
+  return { ...result, hfHome: p.hfHome, cacheGb: Math.round(models.cacheBytes(p.hfHome) / 1024 ** 3 * 10) / 10 }
+})
+
+// 새 판 받기 = 설치 때 쓰는 스크립트를 그대로 한 번 더 돌린다.
+// snapshot_download 는 바뀐 파일만 가져오므로 통째로 다시 받지는 않는다.
+ipcMain.handle('models:update', async () => {
+  if (currentJob || queue.length) return { ok: false, message: '곡을 만드는 중에는 모델을 바꿀 수 없습니다.' }
+  const p = paths()
+  if (!await exists(p.python)) return { ok: false, message: '실행 환경을 찾지 못했습니다.' }
+
+  // 모델 파일이 바뀌면 이미 올라가 있는 워커는 옛 파일을 물고 있다. 먼저 내려보낸다.
+  if (worker) {
+    try { worker.stdin.write(JSON.stringify({ cmd: 'quit' }) + '\n') } catch {}
+    worker.kill()
+    worker = null
+  }
+
+  try {
+    await new Promise((resolve, reject) => {
+      const child = spawn(p.python, ['-u', p.setupModels], {
+        env: { ...process.env, HF_HOME: p.hfHome, PYTHONIOENCODING: 'utf-8', PYTHONUTF8: '1' },
+        windowsHide: true
+      })
+      let err = ''
+      child.stdout.on('data', (d) => String(d).split(/\r?\n/).filter(Boolean).forEach((line) => {
+        try {
+          const event = JSON.parse(line)
+          if (event.type === 'progress') send('models:progress', { bytes: event.bytes, total: MODEL_BYTES })
+          else if (event.type === 'error') err += event.message
+        } catch { /* 진행 보고가 아닌 줄은 흘려보낸다 */ }
+      }))
+      child.stderr.on('data', (d) => { err += d })
+      child.on('error', reject)
+      child.on('close', (code) => code === 0 ? resolve() : reject(new Error(err.slice(-2000) || `모델 받기 실패 (${code})`)))
+    })
+  } catch (error) {
+    log('모델 업데이트 실패', error.message)
+    return { ok: false, message: error.message }
+  }
+
+  const after = await models.check(p.hfHome)
+  log('모델 업데이트 완료', after.repos.map((r) => `${r.repo}@${(r.local || '').slice(0, 7)}`).join(' '))
+  return { ok: true, ...after, cacheGb: Math.round(models.cacheBytes(p.hfHome) / 1024 ** 3 * 10) / 10 }
 })
 
 ipcMain.handle('shell:open', (_e, target) => { shell.openPath(target); return { ok: true } })

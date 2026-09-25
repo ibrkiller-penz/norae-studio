@@ -33,6 +33,7 @@ contextBridge.exposeInMainWorld('norae', {
   remove: (dir) => ipcRenderer.invoke('song:delete', dir),
   rename: (dir, title) => ipcRenderer.invoke('song:rename', { dir, title }),
   reveal: (dir) => ipcRenderer.invoke('song:reveal', dir),
+  score: (dir) => ipcRenderer.invoke('song:score', dir),
   exportMp3: (dir, title) => ipcRenderer.invoke('song:export', { dir, title }),
 
   // 대기열
@@ -44,6 +45,11 @@ contextBridge.exposeInMainWorld('norae', {
   getSettings: () => ipcRenderer.invoke('settings:get'),
   setSettings: (patch) => ipcRenderer.invoke('settings:set', patch),
   resetSpeed: () => ipcRenderer.invoke('settings:reset-speed'),
+
+  // AI 모델(가중치) 갱신 — 프로그램 업데이트와는 별개다
+  checkModels: () => ipcRenderer.invoke('models:check'),
+  updateModels: () => ipcRenderer.invoke('models:update'),
+  onModelProgress: on('models:progress'),
   moveModels: () => ipcRenderer.invoke('settings:move-models'),
   compact: () => ipcRenderer.invoke('songs:compact'),
 

@@ -279,3 +279,22 @@ main {
 ::-webkit-scrollbar { width: 10px; height: 10px; }
 ::-webkit-scrollbar-thumb { background: #2c3240; border-radius: 999px; border: 2px solid var(--panel); }
 ::-webkit-scrollbar-track { background: transparent; }
+
+/* ── 만들기 모드 (새 곡 / 커버) ──────────────────────────────────────────────── */
+.workspace.has-modes { grid-template-rows: auto 1fr 1fr; }
+.modes { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
+button.mode {
+  border-radius: 999px;
+  padding: 6px 16px;
+  background: var(--panel);
+  color: var(--muted);
+  font-weight: 600;
+}
+button.mode.on {
+  background: linear-gradient(135deg, var(--accent), var(--accent-2));
+  border-color: transparent;
+  color: var(--text);
+}
+.cover-pick { display: flex; align-items: center; gap: 8px; min-width: 0; flex: 1; }
+.cover-pick select { max-width: 260px; padding: 5px 9px; font-size: 13px; }
+.cover-pick .tiny { white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }

@@ -46,7 +46,7 @@ function baseTokens (lyrics) {
   }
 }
 
-function estimate (lyrics, { firstRun = true } = {}) {
+function estimate (lyrics, { firstRun = true, skipPlan = false } = {}) {
   const speed = { ...SPEED, ...(learned || {}) }
   const base = baseTokens(lyrics)
   const tokens = {
@@ -54,7 +54,8 @@ function estimate (lyrics, { firstRun = true } = {}) {
     semantic: Math.max(400, Math.round(base.semantic * (learned && learned.semanticTokenFactor || 1)))
   }
   const seconds = {
-    plan: tokens.plan / speed.plan,
+    // 커버는 악보를 이미 갖고 있다. 작곡 단계는 글자를 토큰으로 바꾸는 찰나로 끝난다.
+    plan: skipPlan ? 1 : tokens.plan / speed.plan,
     semantic: tokens.semantic / speed.semantic,
     synth: tokens.semantic * speed.synthPerToken,
     decode: speed.decode
@@ -128,6 +129,10 @@ let queueState = { current: null, waiting: [] }
 const plans = new Map() // jobId → 시간 추정. 대기 중인 곡도 자기 추정치를 갖는다
 let plan = estimate('')
 let updateHint = () => {} // wireGenerate 가 채운다. 학습값이 바뀌면 예상 시간을 다시 그린다
+
+// 만들기 모드. 'cover' 면 고른 원곡의 악보를 그대로 쓰고 편곡(스타일)만 새로 한다.
+let mode = 'new'
+let coverScore = null // {dir, abc, title, lyrics, style}
 
 // ── 잔심부름 ──────────────────────────────────────────────────────────────────
 let toastTimer = null
@@ -374,6 +379,8 @@ async function refreshSongs () {
 
   for (const song of songs) box.appendChild(songLine(song))
 
+  if (mode === 'cover') refreshCoverPicker()
+
   // 골라뒀던 곡이 사라졌으면 재생기를 접는다.
   if (selected && !songs.some((s) => s.dir === selected.dir)) {
     selected = null
@@ -485,6 +492,68 @@ function wireSettings () {
   $('settingsClose').onclick = () => $('settings').classList.add('hidden')
   $('openLog').onclick = () => api.openLog()
 
+  // AI 모델(가중치) 갱신 — 프로그램 업데이트와는 별개다.
+  const short = (sha) => (sha || '').slice(0, 7) || '—'
+
+  const showModels = (result) => {
+    const box = $('modelInfo')
+    if (!result.reachable) {
+      box.textContent = '허깅페이스에 연결하지 못했습니다. 인터넷 연결을 확인해 주세요.'
+      $('modelUpdate').classList.add('hidden')
+      return
+    }
+    if (result.missing) {
+      box.textContent = '모델이 설치되어 있지 않습니다. 설치를 먼저 진행해 주세요.'
+      $('modelUpdate').classList.add('hidden')
+      return
+    }
+    const lines = result.repos.map((r) =>
+      `${r.repo.split('/')[1]}: ${short(r.local)}` + (r.changed ? ` → ${short(r.remote)} (새 판)` : ' (최신)'))
+    lines.push(`저장 위치 ${result.hfHome} · ${result.cacheGb}GB`)
+    box.textContent = lines.join('\n')
+    $('modelUpdate').classList.toggle('hidden', !result.hasUpdate)
+  }
+
+  const checkModels = async () => {
+    $('modelInfo').textContent = '확인 중…'
+    try { showModels(await api.checkModels()) } catch (error) {
+      $('modelInfo').textContent = `확인하지 못했습니다: ${error.message}`
+    }
+  }
+
+  $('modelCheck').onclick = checkModels
+
+  $('modelUpdate').onclick = async () => {
+    const typed = await ask('새 음악 모델을 받습니다. 바뀐 파일만 받지만 몇 GB일 수 있습니다.\n계속하려면 "받기"라고 입력하세요.')
+    if (typed !== '받기') return
+    $('modelUpdate').disabled = true
+    $('modelCheck').disabled = true
+    $('modelBarWrap').classList.remove('hidden')
+    const result = await api.updateModels()
+    $('modelUpdate').disabled = false
+    $('modelCheck').disabled = false
+    $('modelBarWrap').classList.add('hidden')
+    $('modelBar').style.width = '0%'
+    if (!result.ok) return showProblem(result.message)
+    showModels(result)
+    toast('새 음악 모델을 받았습니다.')
+  }
+
+  api.onModelProgress(({ bytes, total }) => {
+    if (!total) return
+    $('modelBar').style.width = `${Math.min(100, bytes / total * 100)}%`
+    $('modelInfo').textContent = `받는 중… ${gb(bytes)} / 약 ${gb(total)}`
+  })
+
+  // 설정 창을 열 때마다 확인하면 느리다. 창을 처음 열 때 한 번만 본다.
+  let modelsChecked = false
+  const maybeCheckModels = () => {
+    if (modelsChecked) return
+    modelsChecked = true
+    checkModels()
+  }
+  $('settingsBtn').addEventListener('click', maybeCheckModels)
+
   $('resetSpeed').onclick = async () => {
     await api.resetSpeed()
     await refreshSettings()
@@ -580,6 +649,98 @@ function setRunning (on, title) {
   else $('runBar').style.width = '0%'
 }
 
+// ── 커버 · 편곡 ───────────────────────────────────────────────────────────────
+// 원곡의 악보(ABC)를 그대로 넘기면 작곡 단계를 건너뛴다. 멜로디와 코드는 그대로 두고
+// 편곡과 보컬만 새로 만드는 것이라, 같은 곡의 "다른 장르 버전"이 된다.
+
+// 커버 후보는 악보가 남아 있는 곡뿐이다. 악보를 남기기 전에 만든 곡은 고를 수 없다.
+function coverCandidates () {
+  return songs.filter((song) => song.canCover && !song.unfinished)
+}
+
+function refreshCoverPicker () {
+  const select = $('coverSource')
+  const candidates = coverCandidates()
+  const keep = coverScore && coverScore.dir
+  select.innerHTML = ''
+
+  if (!candidates.length) {
+    const option = document.createElement('option')
+    option.textContent = '커버할 수 있는 곡이 없습니다'
+    option.value = ''
+    select.appendChild(option)
+    select.disabled = true
+    $('coverNote').textContent = '이 프로그램으로 만든 곡이 있어야 커버할 수 있습니다.'
+    return
+  }
+
+  select.disabled = false
+  for (const song of candidates) {
+    const option = document.createElement('option')
+    option.value = song.dir
+    option.textContent = song.title || '무제'
+    select.appendChild(option)
+  }
+  if (keep && candidates.some((song) => song.dir === keep)) select.value = keep
+  $('coverNote').textContent = '멜로디와 코드는 그대로 두고 편곡만 새로 합니다.'
+}
+
+// 고른 원곡의 악보를 가져와, 스타일·가사 칸을 원곡 값으로 채운다.
+async function loadCoverSource (dir) {
+  if (!dir) { coverScore = null; return }
+  const result = await api.score(dir)
+  if (!result.ok) {
+    coverScore = null
+    $('coverNote').textContent = result.message
+    return
+  }
+  coverScore = { dir, ...result }
+  if (!$('lyrics').value.trim()) $('lyrics').value = result.lyrics
+  if (!$('style').value.trim()) $('style').value = result.style
+  if (!$('title').value.trim()) $('title').value = `${result.title} (커버)`
+  $('coverNote').textContent = '멜로디와 코드는 그대로. 스타일을 바꿔 보세요.'
+  updateHint()
+}
+
+function setMode (next) {
+  mode = next
+  for (const button of document.querySelectorAll('.mode')) {
+    button.classList.toggle('on', button.dataset.mode === next)
+  }
+  const cover = next === 'cover'
+  $('coverPick').classList.toggle('hidden', !cover)
+  $('generate').textContent = cover ? '커버 만들기' : '곡 만들기'
+  // 커버는 악보가 이미 있으니 작곡 단계를 건너뛴다. 남은 단계만 세면 된다.
+  updateHint()
+  if (cover) {
+    refreshCoverPicker()
+    loadCoverSource($('coverSource').value)
+  }
+}
+
+function wireCover () {
+  for (const button of document.querySelectorAll('.mode')) {
+    button.onclick = () => setMode(button.dataset.mode)
+  }
+  $('coverSource').onchange = (e) => loadCoverSource(e.target.value)
+
+  // 재생기에서 바로 "이 곡 커버"
+  $('coverThis').onclick = async () => {
+    if (!selected) return
+    if (!selected.canCover) {
+      return toast('이 곡에는 악보가 남아 있지 않아 커버를 만들 수 없습니다.')
+    }
+    setMode('cover')
+    $('coverSource').value = selected.dir
+    $('title').value = `${selected.title} (커버)`
+    $('lyrics').value = selected.lyrics || ''
+    $('style').value = ''
+    await loadCoverSource(selected.dir)
+    $('style').focus()
+    toast('스타일을 바꾸고 [커버 만들기]를 누르세요.')
+  }
+}
+
 function wireGenerate () {
   const box = $('presets')
   PRESETS.forEach((preset) => {
@@ -597,7 +758,7 @@ function wireGenerate () {
   updateHint = () => {
     const instrumental = $('instrumental').checked
     const lyrics = instrumental ? INSTRUMENTAL_LYRICS : $('lyrics').value
-    const guess = estimate(lyrics, { firstRun: !warmed })
+    const guess = estimate(lyrics, { firstRun: !warmed, skipPlan: mode === 'cover' })
     $('generateHint').textContent = `예상 ${mmss(guess.total)}` + (warmed ? '' : ' (첫 곡은 모델 적재가 더 걸립니다)')
   }
   $('lyrics').oninput = updateHint
@@ -618,20 +779,29 @@ function wireGenerate () {
 
     let lyrics = INSTRUMENTAL_LYRICS
     if (!instrumental) {
-      const raw = $('lyrics').value.trim()
+      const raw = $('lyrics').value.trim() ||
+        (mode === 'cover' && coverScore ? coverScore.lyrics : '')
       if (!raw) return toast('가사를 적거나 [가사 없이]를 켜주세요.')
       const cleaned = cleanLyrics(raw)
       lyrics = cleaned.text
       if (cleaned.notes.length) toast(cleaned.notes.join(' · '), 4000)
     }
 
-    const guess = estimate(lyrics, { firstRun: !warmed })
+    // 커버는 원곡의 악보가 있어야 성립한다.
+    if (mode === 'cover' && !(coverScore && coverScore.abc)) {
+      return toast('커버할 원곡을 먼저 고르세요.')
+    }
+
+    const guess = estimate(lyrics, { firstRun: !warmed, skipPlan: mode === 'cover' })
     const payload = {
       title: $('title').value.trim() || '무제',
       style: instrumental ? instrumentalStyle(style) : style,
       lyrics,
       instrumental,
       seed: $('seed').value.trim(),
+      // 커버: 이 악보를 주면 작곡 단계를 건너뛰고 편곡만 새로 한다.
+      abc: mode === 'cover' ? coverScore.abc : null,
+      coverOf: mode === 'cover' ? coverScore.title : null,
       // 보정 전 토큰 예측. 끝나고 실제값과 견줘 추정식을 다듬는 데 쓴다.
       predict: guess.base
     }
@@ -805,6 +975,7 @@ wireProjects()
 wireLibrary()
 wireSettings()
 wireGenerate()
+wireCover()
 wireJobEvents()
 wireProblem()
 boot().catch((error) => showProblem(`시작하지 못했습니다: ${error.message}`))
