@@ -27,6 +27,40 @@ from pathlib import Path
 import numpy as np
 import torch
 
+
+def _hide_scipy_from_transformers():
+    """transformers 가 scipy·sklearn 을 불러오지 못하게 막는다.
+
+    scipy 의 BLAS DLL 은 이미 올라온 torch 의 OpenMP 런타임과 부딪혀, 윈도우 DLL
+    로더에서 영구히 멈춘다. 모델을 올리려는 순간 거기서 굳는다 — CPU 0%, 디스크 0,
+    스택이 몇 분째 scipy/linalg/blas.py 에 붙어 있었다.
+
+    transformers 는 둘 다 "설치돼 있으면" 쓰겠다고 판단하고, 그 판단만 보고 import 한다.
+
+        _scipy_available   = _is_package_available("scipy")
+        _sklearn_available = importlib.util.find_spec("sklearn") is not None
+
+    들어가는 길이 둘이었다.
+        modeling_utils → loss_utils → loss_for_object_detection → scipy.optimize
+        generation/utils → candidate_generator → sklearn → scipy.linalg
+
+    둘 다 YuE2 와 상관없는 기능이다. 앞은 객체 검출(DETR) 손실 함수고, 뒤는
+    assisted generation(초안 모델로 미리 뽑아 보는 기능)이다. 없는 셈 치면 된다.
+
+    scipy·sklearn 자체는 참고곡 분석과 채보에 필요해서 환경에서 뺄 수 없다.
+    다만 그쪽은 따로 뜨는 프로세스라 이 워커와 섞이지 않는다.
+    """
+    try:
+        from transformers.utils import import_utils
+        import_utils._scipy_available = False
+        import_utils._sklearn_available = False
+    except Exception as exc:  # noqa: BLE001
+        # 막지 못해도 생성은 시도한다. 왜 멈출 수 있는지 흔적은 남긴다.
+        print(f"scipy 차단 실패: {type(exc).__name__}: {exc}", file=sys.stderr, flush=True)
+
+
+_hide_scipy_from_transformers()
+
 # YuE2 파이프라인은 CUDA 할당량을 (전체 - 2GiB) 로 묶어두고 그 위로는 OOM 을 낸다.
 # 윈도우 드라이버가 시스템 RAM 으로 흘려보내는 길을 막아버리므로 상한을 푼다.
 torch.cuda.set_per_process_memory_fraction = lambda *a, **k: None

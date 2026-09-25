@@ -493,6 +493,10 @@ async function runSetup () {
 
 // ── 파이썬 워커 ───────────────────────────────────────────────────────────────
 let stderrTail = []
+// 워커가 마지막으로 뭔가 말한 시각. 너무 오래 조용하면 굳은 것으로 보고 알린다.
+let lastWorkerEvent = 0
+let silenceTimer = null
+const SILENCE_WARNING_SECONDS = 240
 
 // 워커는 자기 사정을 보고하기도 전에 죽는다. 마지막으로 남긴 말을 읽어서
 // 아는 것들은 사용자가 손쓸 수 있는 말로 바꿔준다.
@@ -565,7 +569,25 @@ function startWorker () {
     worker = null
   })
 
+  // 워커가 살아는 있는데 아무 말도 없이 굳는 일이 있었다(scipy 의 DLL 이 torch 와
+  // 부딪혀 윈도우 로더에서 멈췄다). 그때는 진행 막대만 그대로 멈춰 있어서 사용자는
+  // 기다려야 하는 건지 죽은 건지 알 수 없다. 오래 조용하면 알려 준다.
+  clearInterval(silenceTimer)
+  silenceTimer = setInterval(() => {
+    if (!currentJob || !lastWorkerEvent) return
+    const quiet = Math.round((Date.now() - lastWorkerEvent) / 1000)
+    if (quiet < SILENCE_WARNING_SECONDS || currentJob.warnedAt === lastWorkerEvent) return
+    currentJob.warnedAt = lastWorkerEvent
+    log('워커 무응답', `${quiet}초`)
+    send('job:event', {
+      type: 'notice',
+      message: `${Math.round(quiet / 60)}분째 진행이 없습니다. 멈춘 것일 수 있습니다.\n` +
+        '[취소] 를 누르고 다시 시도해 보세요. 만들던 단계는 저장되어 있어 이어서 만들 수 있습니다.'
+    })
+  }, 30000)
+
   worker.on('close', (code) => {
+    clearInterval(silenceTimer)
     log('워커 종료', code, stderrTail.join(' | '))
     if (currentJob) {
       send('job:error', {
@@ -598,6 +620,7 @@ async function learnSpeed (predict) {
 }
 
 async function handleWorkerEvent (event) {
+  lastWorkerEvent = Date.now()
   if (event.type === 'progress' && Date.now() - lastProgressLog > 30000) {
     lastProgressLog = Date.now()
     log('진행', event)
@@ -805,6 +828,9 @@ const sendQueue = () => send('queue:update', queueState())
 function pump () {
   if (currentJob || !queue.length) return
   currentJob = queue.shift()
+  // 워커가 첫 신호조차 못 보내고 굳는 경우도 있다. 여기서 시계를 걸어 둬야
+  // 그 경우에도 "무응답" 경고가 뜬다.
+  lastWorkerEvent = Date.now()
   meter.reset() // 이 곡이 얼마나 걸리는지 재기 시작한다
   startWorker()
   worker.stdin.write(JSON.stringify(currentJob.job) + '\n')
