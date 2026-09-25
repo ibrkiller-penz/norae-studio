@@ -7,3 +7,6 @@ __pycache__/
 *.pyc
 .firebase/
 preview.html
+# Serena(코드 분석 MCP) 설정. 절대 경로가 들어 있어 이 컴퓨터에서만 맞다.
+.mcp.json
+.serena/
