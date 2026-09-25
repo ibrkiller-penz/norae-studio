@@ -375,6 +375,25 @@ def transpose_to_notation(events):
     return out, shift
 
 
+# 박자 추적기(librosa)는 한 박을 반 박으로 세거나 두 박을 한 박으로 세는 일이 잦다.
+# 그러면 템포가 정확히 2배나 1/2배로 나온다. 실측: back number 발라드(실제 ~76 BPM)를
+# 152 로, 다른 발라드(68)를 136 으로 읽었다. 대중가요·발라드는 대개 60~150 안에 있으므로
+# 그 창 안으로 옥타브(배수)를 접어 넣는다. 150 이상 진짜 빠른 곡은 이 앱에서 드물다.
+TEMPO_LOW = 60.0
+TEMPO_HIGH = 150.0
+
+
+def fold_tempo(bpm: float) -> float:
+    """감지된 템포를 사람이 듣는 대표 범위로 접는다. 배수 오독을 바로잡는다."""
+    if bpm <= 0:
+        return 120.0
+    while bpm >= TEMPO_HIGH:
+        bpm /= 2.0
+    while bpm < TEMPO_LOW:
+        bpm *= 2.0
+    return bpm
+
+
 def describe_tempo(bpm: float) -> str:
     if bpm < 70:
         return "slow ballad tempo"
@@ -476,7 +495,14 @@ def transcribe(path: Path, workdir: Path, separate: bool, max_seconds: float,
 
     emit(type="progress", percent=20.0, note="박자 찾는 중")
     tempo, beats = librosa.beat.beat_track(y=mix_y, sr=sr, hop_length=hop)
-    bpm = float(np.atleast_1d(tempo)[0]) or 120.0
+    raw_bpm = float(np.atleast_1d(tempo)[0]) or 120.0
+    bpm = fold_tempo(raw_bpm)
+    # 템포를 절반으로 접었으면 비트 배열도 같은 배수로 솎아야 한다. 안 그러면
+    # chords_per_bar 가 네 박(=반 마디)씩 묶어 코드를 반 마디마다 샘플링하고 곡의
+    # 앞쪽만 덮게 된다. round(raw/folded) 가 2 면 하나 걸러 하나만 남긴다.
+    factor = int(round(raw_bpm / bpm)) if bpm else 1
+    if factor >= 2:
+        beats = beats[::factor]
 
     f0, voiced, prob = track_melody(melody_y, sr, hop)
 
