@@ -978,8 +978,19 @@ ipcMain.handle('projects:delete', async (_e, name) => {
   if (!target.startsWith(root)) return { ok: false, message: '알 수 없는 폴더입니다.' }
   try {
     await shell.trashItem(target)
-  } catch (error) {
-    return { ok: false, message: `지우지 못했습니다: ${error.message}` }
+  } catch (first) {
+    // 곡 삭제와 같은 이유로 실패한다 — 누군가 폴더 안의 파일을 붙잡고 있다.
+    await new Promise((resolve) => setTimeout(resolve, 700))
+    try {
+      await shell.trashItem(target)
+    } catch (second) {
+      log('프로젝트 삭제 실패', name, second.message)
+      return {
+        ok: false,
+        message: '지우지 못했습니다. 다른 프로그램이 이 폴더의 파일을 쓰고 있을 수 있습니다.\n' +
+          '재생을 멈추고 탐색기에서 그 폴더를 닫은 뒤 다시 시도해 주세요.'
+      }
+    }
   }
   if (projectName() === name) {
     const left = (await listProjects())[0]
@@ -1044,8 +1055,35 @@ ipcMain.handle('queue:clear', async () => {
 })
 
 ipcMain.handle('song:delete', async (_e, dir) => {
-  if (!dir.startsWith(await ensureSongsDir())) return { ok: false }
-  await shell.trashItem(dir)
+  if (!dir || !dir.startsWith(await ensureSongsDir())) {
+    return { ok: false, message: '알 수 없는 폴더입니다.' }
+  }
+  if (currentJob && currentJob.outDir === dir) {
+    return { ok: false, message: '지금 만들고 있는 곡입니다. 먼저 취소해 주세요.' }
+  }
+
+  // 휴지통으로 보내는 게 실패하는 가장 흔한 이유는 누군가 음원 파일을 붙잡고
+  // 있는 것이다. 화면이 재생기를 놓아도 윈도우가 핸들을 거두는 데 잠깐 걸린다.
+  // 한 번 더 시도해 보고, 그래도 안 되면 왜 안 되는지 알려 준다.
+  // (전에는 여기서 예외가 그대로 터져 IPC 가 거부됐고, 화면은 아무 말도 못 했다.)
+  const attempt = () => shell.trashItem(dir)
+  try {
+    await attempt()
+  } catch (first) {
+    await new Promise((resolve) => setTimeout(resolve, 700))
+    try {
+      await attempt()
+    } catch (second) {
+      log('삭제 실패', dir, second.message)
+      return {
+        ok: false,
+        message: '삭제하지 못했습니다. 다른 프로그램이 이 곡의 파일을 쓰고 있을 수 있습니다.\n' +
+          '재생을 멈추고 탐색기에서 그 폴더를 닫은 뒤 다시 시도해 주세요.',
+        detail: `${first.message}\n${second.message}\n${dir}`
+      }
+    }
+  }
+  log('삭제', dir)
   return { ok: true }
 })
 

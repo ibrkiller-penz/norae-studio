@@ -179,6 +179,41 @@ function ask (title, initial = '') {
   })
 }
 
+/**
+ * 예/아니오만 묻는다.
+ *
+ * 전에는 지울 때마다 "삭제" 를 받아 적게 했는데, 손이 많이 가고 오타가 나면
+ * 아무 일도 일어나지 않아 "안 지워진다" 로 보였다. 휴지통으로 가는 일이라
+ * 되돌릴 수 있으니 한 번 묻는 것으로 충분하다.
+ */
+function confirmAsk (title, okLabel = '삭제') {
+  return new Promise((resolve) => {
+    $('askTitle').textContent = title
+    $('askInput').classList.add('hidden')
+    $('askOk').textContent = okLabel
+    $('askOk').classList.add('danger')
+    $('ask').classList.remove('hidden')
+    $('askOk').focus()
+
+    const done = (yes) => {
+      $('ask').classList.add('hidden')
+      $('askInput').classList.remove('hidden')
+      $('askOk').textContent = '확인'
+      $('askOk').classList.remove('danger')
+      $('askOk').onclick = null
+      $('askCancel').onclick = null
+      document.onkeydown = null
+      resolve(yes)
+    }
+    $('askOk').onclick = () => done(true)
+    $('askCancel').onclick = () => done(false)
+    document.onkeydown = (e) => {
+      if (e.key === 'Escape') done(false)
+      if (e.key === 'Enter') done(true)
+    }
+  })
+}
+
 function showProblem (message, detail) {
   $('problemText').textContent = message || '알 수 없는 오류입니다.'
   const box = $('problemDetail')
@@ -320,12 +355,17 @@ function wireProjects () {
 
   $('deleteProject').onclick = async () => {
     const name = currentProject
-    // 곡이 통째로 사라지는 일이라 이름을 다시 받아 확인한다.
-    const typed = await ask(`"${name}" 프로젝트를 휴지통으로 보냅니다.\n확인하려면 이름을 그대로 입력하세요.`)
-    if (typed !== name) return toast('취소했습니다.')
+    // 곡이 통째로 사라지는 일이라 몇 곡인지 보여주고 묻는다.
+    const count = songs.length
+    const what = count ? `안에 든 곡 ${count}개와 함께 ` : ''
+    if (!await confirmAsk(`"${name}" 프로젝트를 ${what}휴지통으로 보냅니다.`)) return
+
+    releasePlayer() // 재생 중이면 파일을 붙잡고 있어 삭제가 막힌다
     const result = await api.deleteProject(name)
-    if (!result.ok) return toast(result.message)
+    if (!result.ok) return showProblem(result.message || '지우지 못했습니다.')
     toast('휴지통으로 보냈습니다.')
+    selected = null
+    $('player').classList.add('hidden')
     await refreshProjects()
     await refreshSongs()
   }
@@ -414,6 +454,22 @@ async function resumeSong (song) {
   toast('이어서 만듭니다.')
 }
 
+/**
+ * 재생기가 물고 있는 음원 파일을 놓게 한다.
+ *
+ * src 를 '' 로 두는 것만으로는 브라우저가 파일을 반납하지 않는다. 속성을 지우고
+ * load() 를 불러야 한다. 이걸 안 해서 윈도우가 "사용 중인 파일"이라며 삭제를
+ * 막았고, 앱은 그 실패를 알리지도 않아 그냥 안 지워지는 것처럼 보였다.
+ */
+function releasePlayer () {
+  const audio = $('audio')
+  try {
+    audio.pause()
+    audio.removeAttribute('src')
+    audio.load()
+  } catch { /* 재생기가 비어 있으면 그만이다 */ }
+}
+
 function wireLibrary () {
   $('renameSong').onclick = async () => {
     if (!selected) return
@@ -436,14 +492,24 @@ function wireLibrary () {
 
   $('deleteSong').onclick = async () => {
     if (!selected) return
-    const typed = await ask(`"${selected.title}" 을(를) 휴지통으로 보냅니다.\n확인하려면 "삭제"라고 입력하세요.`)
-    if (typed !== '삭제') return
-    // 재생 중이면 파일을 물고 있어서 삭제가 막힌다. 먼저 놓아준다.
-    $('audio').pause()
-    $('audio').src = ''
-    await api.remove(selected.dir)
+    const song = selected
+    if (!await confirmAsk(`"${song.title}" 을(를) 휴지통으로 보냅니다.`)) return
+
+    // 재생기가 음원 파일을 붙잡고 있으면 윈도우가 삭제를 막는다.
+    // src 를 빈 문자열로 두는 것만으로는 안 놓는다. 속성을 지우고 load() 까지 해야
+    // 브라우저가 파일 핸들을 실제로 반납한다.
+    releasePlayer()
     selected = null
     $('player').classList.add('hidden')
+
+    const result = await api.remove(song.dir)
+    if (!result.ok) {
+      // 전에는 결과를 보지도 않아서, 실패해도 아무 말 없이 그대로 남아 있었다.
+      selected = song
+      $('player').classList.remove('hidden')
+      return showProblem(result.message || '삭제하지 못했습니다.', result.detail)
+    }
+    toast('휴지통으로 보냈습니다.')
     await refreshSongs()
     await refreshProjects()
   }
