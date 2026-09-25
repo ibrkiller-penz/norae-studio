@@ -509,7 +509,10 @@ function wireLibrary () {
       $('player').classList.remove('hidden')
       return showProblem(result.message || '삭제하지 못했습니다.', result.detail)
     }
-    toast('휴지통으로 보냈습니다.')
+    // 휴지통이 끝내 거부하면 메인이 폴더째 지운다. 그때는 되돌릴 수 없으니 알린다.
+    toast(result.trashed === false
+      ? '휴지통이 거부해서 바로 지웠습니다. 되돌릴 수 없습니다.'
+      : '휴지통으로 보냈습니다.', 5000)
     await refreshSongs()
     await refreshProjects()
   }
@@ -632,6 +635,10 @@ function wireSettings () {
   $('compact').onclick = async () => {
     const typed = await ask('이미 만든 곡을 MP3로 바꾸고 중간 파일을 지웁니다.\n계속하려면 "정리"라고 입력하세요.')
     if (typed !== '정리') return
+    // 원본 음원(wav)을 지우는 작업이다. 재생기가 붙잡고 있으면 EBUSY 가 난다.
+    releasePlayer()
+    selected = null
+    $('player').classList.add('hidden')
     toast('정리 중입니다…', 60000)
     const result = await api.compact()
     if (!result.ok) return toast(result.message)

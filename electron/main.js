@@ -159,6 +159,28 @@ const unzip = (zip, dest) => run('powershell.exe',
 
 async function exists (p) { try { await fsp.access(p); return true } catch { return false } }
 
+// 윈도우는 누가 파일을 열어 두면 지우지 못하게 막는다(EBUSY/EPERM). 재생기가 음원을
+// 붙잡고 있을 때가 대부분인데, 놓아주라고 해도 실제로 핸들이 풀리기까지 잠깐 걸린다.
+// 실제 기록: "EBUSY: resource busy or locked, unlink '...\audio.wav'"
+// 그래서 한 번 실패했다고 포기하지 않고 잠깐씩 기다리며 다시 해 본다.
+const LOCKED = new Set(['EBUSY', 'EPERM', 'ENOTEMPTY', 'EACCES'])
+
+async function removeLocked (target, options = {}) {
+  const { recursive = false, attempts = 5 } = options
+  for (let tries = 1; ; tries += 1) {
+    try {
+      await fsp.rm(target, { force: true, recursive })
+      return true
+    } catch (error) {
+      if (!LOCKED.has(error.code) || tries >= attempts) {
+        if (tries >= attempts) log('파일을 지우지 못함', target, error.code || error.message)
+        return false
+      }
+      await new Promise((resolve) => setTimeout(resolve, tries * 300))
+    }
+  }
+}
+
 function withTimeout (promise, ms) {
   return Promise.race([promise, new Promise((_resolve, reject) =>
     setTimeout(() => reject(new Error(`응답 없음 (${ms}ms 초과)`)), ms))])
@@ -669,12 +691,7 @@ async function discardPartial (dir) {
   if (await exists(path.join(dir, 'audio.wav')) ||
       await exists(path.join(dir, 'song.mp3')) ||
       await resumable(dir)) return
-  try {
-    await fsp.rm(dir, { recursive: true, force: true })
-    log('빈 곡 폴더 삭제', dir)
-  } catch (error) {
-    log('빈 곡 폴더를 지우지 못함', dir, error.message)
-  }
+  if (await removeLocked(dir, { recursive: true })) log('빈 곡 폴더 삭제', dir)
 }
 
 async function sweepPartials () {
@@ -722,8 +739,8 @@ async function folderSize (dir) {
 
 async function tidySong (dir) {
   try {
-    for (const name of LEFTOVERS) await fsp.rm(path.join(dir, name), { force: true })
-    await fsp.rm(path.join(dir, 'plan'), { recursive: true, force: true })
+    for (const name of LEFTOVERS) await removeLocked(path.join(dir, name))
+    await removeLocked(path.join(dir, 'plan'), { recursive: true })
     // meta.json 은 숨김으로 돌려서 폴더에 음악만 보이게 한다.
     const meta = path.join(dir, 'meta.json')
     if (await exists(meta)) {
@@ -741,9 +758,9 @@ async function autoConvert (dir) {
     const mp3 = await encodeMp3(dir)
     if (!mp3) return {}
     if (settings.dropWav) {
-      await fsp.rm(path.join(dir, 'audio.wav'), { force: true })
+      await removeLocked(path.join(dir, 'audio.wav'))
       // 잠재벡터는 같은 테이크를 다시 디코딩할 때만 쓴다. 같이 버린다.
-      await fsp.rm(path.join(dir, 'latent.npy'), { force: true })
+      await removeLocked(path.join(dir, 'latent.npy'))
     }
     log('MP3 저장', mp3, settings.dropWav ? '(WAV 삭제)' : '')
     return { mp3 }
@@ -1064,27 +1081,33 @@ ipcMain.handle('song:delete', async (_e, dir) => {
 
   // 휴지통으로 보내는 게 실패하는 가장 흔한 이유는 누군가 음원 파일을 붙잡고
   // 있는 것이다. 화면이 재생기를 놓아도 윈도우가 핸들을 거두는 데 잠깐 걸린다.
-  // 한 번 더 시도해 보고, 그래도 안 되면 왜 안 되는지 알려 준다.
   // (전에는 여기서 예외가 그대로 터져 IPC 가 거부됐고, 화면은 아무 말도 못 했다.)
-  const attempt = () => shell.trashItem(dir)
-  try {
-    await attempt()
-  } catch (first) {
-    await new Promise((resolve) => setTimeout(resolve, 700))
+  let last = null
+  for (let tries = 1; tries <= 5; tries += 1) {
     try {
-      await attempt()
-    } catch (second) {
-      log('삭제 실패', dir, second.message)
-      return {
-        ok: false,
-        message: '삭제하지 못했습니다. 다른 프로그램이 이 곡의 파일을 쓰고 있을 수 있습니다.\n' +
-          '재생을 멈추고 탐색기에서 그 폴더를 닫은 뒤 다시 시도해 주세요.',
-        detail: `${first.message}\n${second.message}\n${dir}`
-      }
+      await shell.trashItem(dir)
+      log('삭제', dir)
+      return { ok: true }
+    } catch (error) {
+      last = error
+      await new Promise((resolve) => setTimeout(resolve, tries * 300))
     }
   }
-  log('삭제', dir)
-  return { ok: true }
+
+  // 휴지통이 끝내 거부하면 폴더째 지운다. 여기까지 왔다면 사용자는 이미 지우겠다고
+  // 답한 상태다. 되돌릴 수 없으니 그렇게 했다고 분명히 알린다.
+  if (await removeLocked(dir, { recursive: true })) {
+    log('삭제(휴지통 실패 → 바로 지움)', dir, last && last.message)
+    return { ok: true, trashed: false }
+  }
+
+  log('삭제 실패', dir, last && last.message)
+  return {
+    ok: false,
+    message: '삭제하지 못했습니다. 다른 프로그램이 이 곡의 파일을 쓰고 있을 수 있습니다.\n' +
+      '재생을 멈추고, 탐색기에서 그 폴더를 닫은 뒤 다시 시도해 주세요.',
+    detail: `${last && last.message}\n${dir}`
+  }
 })
 
 ipcMain.handle('song:rename', async (_e, { dir, title }) => {
@@ -1149,8 +1172,9 @@ ipcMain.handle('songs:compact', async () => {
       const before = await folderSize(song.dir)
       const wav = path.join(song.dir, 'audio.wav')
       if (await exists(wav) && await encodeMp3(song.dir)) {
-        await fsp.rm(wav, { force: true })
-        converted += 1
+        // 재생기가 붙잡고 있으면 EBUSY 가 난다. 놓을 때까지 몇 번 기다린다.
+        if (await removeLocked(wav)) converted += 1
+        else failures.push(`${song.title}: 음원 파일이 사용 중이라 원본을 지우지 못했습니다.`)
       }
       await tidySong(song.dir)
       savedBytes += Math.max(0, before - await folderSize(song.dir))
