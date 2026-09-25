@@ -114,6 +114,7 @@
       <div class="panel-head">
         <h2>스타일 프롬프트</h2>
         <div class="head-actions">
+          <button id="refOpen" class="ghost small">참고곡 분석</button>
           <label class="seed-label">시드
             <input id="seed" placeholder="랜덤" inputmode="numeric">
           </label>
@@ -256,6 +257,43 @@
       <button id="problemCopy" class="ghost">오류 내용 복사</button>
       <button id="problemLog" class="ghost">기록 파일 열기</button>
     </div>
+  </div>
+</div>
+
+<!-- 참고곡 분석 ---------------------------------------------------------------->
+<div id="ref" class="overlay hidden">
+  <div class="setup-card">
+    <h1>참고곡 분석</h1>
+    <p class="muted">참고할 곡의 <b>템포·조성·코드진행·음색</b>을 재서 스타일 프롬프트로 만듭니다.
+      멜로디를 베끼지 않습니다 — 잰 값을 참고해서 AI 가 새로 작곡합니다.</p>
+
+    <label class="field">
+      <span class="muted">유튜브 주소 (또는 음원을 지원하는 다른 사이트)</span>
+      <input id="refUrl" placeholder="https://www.youtube.com/watch?v=..." autocomplete="off">
+    </label>
+    <div class="setup-actions" style="margin-top:0">
+      <button id="refFile" class="ghost small">내 컴퓨터의 음원 파일 고르기</button>
+      <span id="refFileName" class="muted tiny"></span>
+    </div>
+
+    <div id="refInstall" class="adopt hidden">
+      <b>분석 도구가 아직 설치되지 않았습니다.</b>
+      <span class="muted">librosa · yt-dlp — 약 200MB, 한 번만 받으면 됩니다.</span>
+      <button id="refInstallBtn" class="primary small">분석 도구 설치</button>
+    </div>
+
+    <div class="bar hidden" id="refBarWrap"><div id="refBar"></div></div>
+    <p id="refStatus" class="muted tiny"></p>
+
+    <pre id="refResult" class="log hidden"></pre>
+
+    <div class="setup-actions">
+      <button id="refRun" class="primary">분석하기</button>
+      <button id="refApply" class="primary hidden">이 스타일 쓰기</button>
+      <button id="refClose" class="ghost">닫기</button>
+    </div>
+    <p class="muted tiny">받은 음원은 분석이 끝나면 지웁니다. 만들어진 곡을 공개·배포할 때의
+      권리 확인은 이용자 몫입니다.</p>
   </div>
 </div>
 

@@ -34,6 +34,9 @@ const NEEDED_VRAM_GB = 8
 // 안 그러면 11GB 를 다 받고 나서야 못 쓴다는 걸 알게 된다.
 const MIN_COMPUTE = 8.0
 
+// 참고곡 분석에 쓰는 꾸러미. 설치할 때 같이 받고, 이미 설치한 사람은 필요할 때 받는다.
+const ANALYZE_PACKAGES = ['librosa==0.11.0', 'yt-dlp>=2025.1.1']
+
 let win = null
 let worker = null
 let currentJob = null
@@ -432,7 +435,7 @@ async function runSetup () {
   // 4. YuE2 와 곁다리들
   send('setup:step', { step: 'yue', status: 'run' })
   await run(p.uv, ['pip', 'install', '--python', p.python, YUE_URL,
-    'imageio-ffmpeg==0.6.0'], { stream: true, env: uvEnv() })
+    'imageio-ffmpeg==0.6.0', ...ANALYZE_PACKAGES], { stream: true, env: uvEnv() })
   send('setup:step', { step: 'yue', status: 'done' })
 
   // 5. 모델 가중치
@@ -1161,6 +1164,120 @@ ipcMain.handle('settings:set', async (_e, patch) => {
     updateCheck: next.updateCheck !== false,
     updateRepo: next.updateRepo || updater.DEFAULT_REPO
   }
+})
+
+// ── 참고곡 분석 ───────────────────────────────────────────────────────────────
+// 유튜브 주소나 음원 파일에서 템포·조성·코드진행·음색을 재서 스타일 프롬프트로 옮긴다.
+// 멜로디를 따오지 않는다 — 작곡은 그 설명을 참고해서 YuE2 가 새로 한다.
+// uv 는 설치할 때 받아 두지만, 남의 실행환경을 "가져오기" 한 경우에는 우리 폴더에 없다.
+// 그때는 파이썬 옆에서 찾고, 그래도 없으면 새로 받는다.
+async function ensureUv () {
+  const p = paths()
+  if (await exists(p.uv)) return p.uv
+  // venv/Scripts/python.exe → runtime/uv.exe
+  const beside = path.resolve(path.dirname(p.python), '..', '..', 'uv.exe')
+  if (await exists(beside)) return beside
+  await fsp.mkdir(p.runtime, { recursive: true })
+  const zip = path.join(os.tmpdir(), 'uv.zip')
+  await download(UV_URL, zip)
+  await unzip(zip, p.runtime)
+  await fsp.unlink(zip).catch(() => {})
+  return p.uv
+}
+
+async function analyzeReady () {
+  const p = paths()
+  if (!await exists(p.python)) return false
+  try {
+    await withTimeout(run(p.python, ['-c', 'import librosa, yt_dlp']), 90000)
+    return true
+  } catch {
+    return false
+  }
+}
+
+ipcMain.handle('analyze:ready', () => analyzeReady())
+
+ipcMain.handle('analyze:install', async () => {
+  const p = paths()
+  try {
+    const uv = await ensureUv()
+    send('analyze:progress', { note: '분석 도구를 설치하는 중… (약 200MB)' })
+    await run(uv, ['pip', 'install', '--python', p.python, ...ANALYZE_PACKAGES],
+      { stream: true, env: uvEnv() })
+    log('분석 도구 설치 완료')
+    return { ok: true }
+  } catch (error) {
+    log('분석 도구 설치 실패', error.message)
+    return { ok: false, message: `분석 도구를 설치하지 못했습니다: ${error.message}` }
+  }
+})
+
+ipcMain.handle('analyze:pick-file', async () => {
+  const picked = await dialog.showOpenDialog(win, {
+    title: '참고할 음원 파일',
+    properties: ['openFile'],
+    filters: [{ name: '음원', extensions: ['mp3', 'wav', 'm4a', 'flac', 'ogg', 'opus', 'aac', 'wma'] }]
+  })
+  if (picked.canceled || !picked.filePaths.length) return { ok: false, canceled: true }
+  return { ok: true, path: picked.filePaths[0] }
+})
+
+let analyzer = null
+
+ipcMain.handle('analyze:cancel', () => {
+  if (analyzer) { analyzer.kill(); analyzer = null }
+  return { ok: true }
+})
+
+ipcMain.handle('analyze:run', async (_e, { url, file }) => {
+  const p = paths()
+  if (!url && !file) return { ok: false, message: '주소나 파일이 필요합니다.' }
+  if (analyzer) return { ok: false, message: '이미 분석 중입니다.' }
+
+  const args = ['-u', unpacked(path.join(__dirname, '..', 'python', 'analyze.py'))]
+  args.push(...(url ? ['--url', url] : ['--file', file]))
+  // 받은 음원은 임시 폴더에 뒀다가 분석이 끝나면 스스로 지운다.
+  args.push('--out', path.join(os.tmpdir(), 'norae-reference'))
+
+  log('참고곡 분석 시작', url || file)
+  return await new Promise((resolve) => {
+    analyzer = spawn(p.python, args, {
+      env: { ...process.env, PYTHONIOENCODING: 'utf-8', PYTHONUTF8: '1' },
+      windowsHide: true
+    })
+    let analysis = null
+    let failure = null
+    let buffer = ''
+
+    analyzer.stdout.on('data', (chunk) => {
+      buffer += chunk
+      const lines = buffer.split(/\r?\n/)
+      buffer = lines.pop()
+      for (const line of lines) {
+        if (!line.trim()) continue
+        try {
+          const event = JSON.parse(line)
+          if (event.type === 'done') analysis = event.analysis
+          else if (event.type === 'error') failure = event.message
+          else send('analyze:progress', event)
+        } catch { /* 진행 보고가 아닌 줄은 흘려보낸다 */ }
+      }
+    })
+    analyzer.stderr.on('data', (d) => log('분석 stderr', String(d).trim().slice(-400)))
+    analyzer.on('error', (error) => {
+      analyzer = null
+      resolve({ ok: false, message: `분석을 시작하지 못했습니다: ${error.message}` })
+    })
+    analyzer.on('close', (code) => {
+      analyzer = null
+      if (analysis) {
+        log('참고곡 분석 완료', { bpm: analysis.bpm, key: `${analysis.key} ${analysis.mode}` })
+        return resolve({ ok: true, analysis })
+      }
+      resolve({ ok: false, message: failure || `분석에 실패했습니다 (code ${code}).` })
+    })
+  })
 })
 
 // ── 모델(가중치) 업데이트 ─────────────────────────────────────────────────────

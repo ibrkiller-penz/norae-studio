@@ -46,6 +46,14 @@ contextBridge.exposeInMainWorld('norae', {
   setSettings: (patch) => ipcRenderer.invoke('settings:set', patch),
   resetSpeed: () => ipcRenderer.invoke('settings:reset-speed'),
 
+  // 참고곡 분석 (유튜브 주소 / 음원 파일 → 스타일 프롬프트)
+  analyzeReady: () => ipcRenderer.invoke('analyze:ready'),
+  analyzeInstall: () => ipcRenderer.invoke('analyze:install'),
+  analyzePickFile: () => ipcRenderer.invoke('analyze:pick-file'),
+  analyzeRun: (source) => ipcRenderer.invoke('analyze:run', source),
+  analyzeCancel: () => ipcRenderer.invoke('analyze:cancel'),
+  onAnalyzeProgress: on('analyze:progress'),
+
   // AI 모델(가중치) 갱신 — 프로그램 업데이트와는 별개다
   checkModels: () => ipcRenderer.invoke('models:check'),
   updateModels: () => ipcRenderer.invoke('models:update'),

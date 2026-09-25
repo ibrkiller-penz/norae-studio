@@ -741,6 +741,134 @@ function wireCover () {
   }
 }
 
+// ── 참고곡 분석 ───────────────────────────────────────────────────────────────
+// 참고곡에서 재는 것은 템포·조성·코드진행·음색 같은 "음악적 사실"이다. 멜로디는
+// 따오지 않는다. 잰 값을 영어 스타일 설명으로 옮겨 주면, 작곡은 AI 가 새로 한다.
+let refAnalysis = null
+let refFilePath = null
+
+function refStatus (text) { $('refStatus').textContent = text || '' }
+
+function showAnalysis (a) {
+  refAnalysis = a
+  // 조성 신뢰도가 낮으면 음악이 아니거나(말소리·효과음) 조가 계속 바뀌는 곡이다.
+  // 그대로 쓰면 엉뚱한 프롬프트가 되므로 미리 알려 준다.
+  const shaky = a.keyConfidence < 0.5
+  $('refResult').textContent = [
+    `템포        ${a.bpm} BPM`,
+    `조성        ${a.key} ${a.mode}  (나란한조 ${a.relativeKey})` +
+      (shaky ? `  ← 확신 낮음 ${a.keyConfidence}` : ''),
+    `코드 진행    ${a.progression.join(' - ') || '—'}`,
+    `음색        중심 ${a.centroid}Hz · 셈여림 ${a.dynamics} · 타악기 ${a.drive}`,
+    `분석 길이    ${a.seconds}초`,
+    '',
+    ...(shaky
+      ? ['', '⚠ 조성 확신이 낮습니다. 음악이 아니거나 조가 자주 바뀌는 곡일 수 있습니다.',
+          '   조성·코드 부분은 지우고 템포만 쓰는 편이 나을 수 있습니다.']
+      : []),
+    '',
+    '만들어진 스타일 프롬프트:',
+    a.prompt
+  ].join('\n')
+  $('refResult').classList.remove('hidden')
+  $('refApply').classList.remove('hidden')
+}
+
+function wireReference () {
+  const setBusy = (busy) => {
+    $('refRun').disabled = busy
+    $('refRun').textContent = busy ? '분석 중…' : '분석하기'
+    $('refBarWrap').classList.toggle('hidden', !busy)
+    if (!busy) $('refBar').style.width = '0%'
+  }
+
+  $('refOpen').onclick = async () => {
+    $('ref').classList.remove('hidden')
+    refStatus('분석 도구를 확인하는 중…')
+    const ready = await api.analyzeReady()
+    $('refInstall').classList.toggle('hidden', ready)
+    $('refRun').disabled = !ready
+    refStatus(ready ? '' : '분석 도구를 먼저 설치해 주세요.')
+  }
+
+  $('refClose').onclick = () => {
+    api.analyzeCancel()
+    $('ref').classList.add('hidden')
+  }
+
+  $('refInstallBtn').onclick = async () => {
+    $('refInstallBtn').disabled = true
+    refStatus('설치하는 중… 몇 분 걸릴 수 있습니다.')
+    const result = await api.analyzeInstall()
+    $('refInstallBtn').disabled = false
+    if (!result.ok) return showProblem(result.message)
+    $('refInstall').classList.add('hidden')
+    $('refRun').disabled = false
+    refStatus('설치했습니다. 주소를 넣거나 파일을 고르세요.')
+  }
+
+  $('refFile').onclick = async () => {
+    const picked = await api.analyzePickFile()
+    if (!picked.ok) return
+    refFilePath = picked.path
+    $('refFileName').textContent = picked.path.split(/[\\/]/).pop()
+    $('refUrl').value = '' // 파일과 주소 둘 중 하나만 쓴다
+  }
+
+  // 주소를 치면 파일 선택은 물린다.
+  $('refUrl').oninput = () => {
+    if ($('refUrl').value.trim()) {
+      refFilePath = null
+      $('refFileName').textContent = ''
+    }
+  }
+
+  $('refRun').onclick = async () => {
+    const url = $('refUrl').value.trim()
+    if (!url && !refFilePath) return toast('유튜브 주소를 넣거나 음원 파일을 고르세요.')
+    setBusy(true)
+    $('refResult').classList.add('hidden')
+    $('refApply').classList.add('hidden')
+    refStatus('시작하는 중…')
+    const result = await api.analyzeRun(url ? { url } : { file: refFilePath })
+    setBusy(false)
+    if (!result.ok) {
+      refStatus('')
+      return showProblem(result.message)
+    }
+    refStatus('분석을 마쳤습니다.')
+    showAnalysis(result.analysis)
+  }
+
+  $('refApply').onclick = () => {
+    if (!refAnalysis) return
+    // 장르·악기·보컬은 사람이 골라야 한다. 잰 값은 뒤에 붙여 준다.
+    const existing = $('style').value.trim()
+    $('style').value = existing ? `${existing}, ${refAnalysis.prompt}` : refAnalysis.prompt
+    if (!$('title').value.trim() && refAnalysis.title) {
+      $('title').value = `${refAnalysis.title} 풍`.slice(0, 60)
+    }
+    $('ref').classList.add('hidden')
+    updateHint()
+    toast('스타일 칸에 넣었습니다. 장르·악기·보컬을 앞에 덧붙이면 더 좋습니다.', 5000)
+  }
+
+  api.onAnalyzeProgress((event) => {
+    if (event.type === 'progress') {
+      if (event.percent) $('refBar').style.width = `${event.percent}%`
+      refStatus(event.note || '')
+    } else if (event.type === 'stage') {
+      const labels = { download: '음원을 받는 중', decode: '음원을 읽는 중', analyze: '분석하는 중' }
+      if (event.status === 'start') refStatus(labels[event.stage] || event.stage)
+      if (event.stage === 'download' && event.status === 'done' && event.title) {
+        refStatus(`받았습니다: ${event.title}`)
+      }
+    } else if (event.note) {
+      refStatus(event.note)
+    }
+  })
+}
+
 function wireGenerate () {
   const box = $('presets')
   PRESETS.forEach((preset) => {
@@ -976,6 +1104,7 @@ wireLibrary()
 wireSettings()
 wireGenerate()
 wireCover()
+wireReference()
 wireJobEvents()
 wireProblem()
 boot().catch((error) => showProblem(`시작하지 못했습니다: ${error.message}`))
