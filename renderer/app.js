@@ -133,6 +133,8 @@ let updateHint = () => {} // wireGenerate 가 채운다. 학습값이 바뀌면 
 // 만들기 모드. 'cover' 면 고른 원곡의 악보를 그대로 쓰고 편곡(스타일)만 새로 한다.
 let mode = 'new'
 let coverScore = null // {dir, abc, title, lyrics, style}
+let scoreFile = null  // 채보하려고 고른 음원
+let scoreResult = null // 채보 결과 {abc, info}
 
 // ── 잔심부름 ──────────────────────────────────────────────────────────────────
 let toastTimer = null
@@ -379,7 +381,7 @@ async function refreshSongs () {
 
   for (const song of songs) box.appendChild(songLine(song))
 
-  if (mode === 'cover') refreshCoverPicker()
+  if (mode === 'cover' && $('coverFrom').value === 'song') refreshCoverPicker()
 
   // 골라뒀던 곡이 사라졌으면 재생기를 접는다.
   if (selected && !songs.some((s) => s.dir === selected.dir)) {
@@ -712,10 +714,39 @@ function setMode (next) {
   $('generate').textContent = cover ? '커버 만들기' : '곡 만들기'
   // 커버는 악보가 이미 있으니 작곡 단계를 건너뛴다. 남은 단계만 세면 된다.
   updateHint()
-  if (cover) {
+  if (cover) setCoverFrom($('coverFrom').value)
+}
+
+// 커버 재료를 어디서 가져올지: 내가 만든 곡 / MP3 파일 / 유튜브
+function setCoverFrom (from) {
+  const isSong = from === 'song'
+  $('coverSource').classList.toggle('hidden', !isSong)
+  $('coverPickFile').classList.toggle('hidden', from !== 'file')
+  $('coverPickYt').classList.toggle('hidden', from !== 'yt')
+  if (isSong) {
     refreshCoverPicker()
     loadCoverSource($('coverSource').value)
+  } else {
+    coverScore = null
+    $('coverNote').textContent = from === 'file'
+      ? 'MP3 를 고르면 악보를 뽑아냅니다.'
+      : '유튜브에서 MP3 를 받은 뒤 악보를 뽑아냅니다.'
   }
+}
+
+// 음원 하나를 받아 채보 창을 연다. 두 경로(파일 고르기 / 유튜브)가 여기로 모인다.
+function openScoreDialog (filePath) {
+  scoreFile = filePath
+  $('scoreFileName').textContent = filePath.split(/[\\/]/).pop()
+  $('scoreResult').classList.add('hidden')
+  $('scoreUse').classList.add('hidden')
+  $('scoreStatus').textContent = ''
+  $('score').classList.remove('hidden')
+  api.transcribeReady().then((ready) => {
+    $('scoreInstall').classList.toggle('hidden', ready)
+    $('scoreRun').disabled = !ready
+    if (!ready) $('scoreStatus').textContent = '보컬 분리 도구를 먼저 설치해 주세요.'
+  })
 }
 
 function wireCover () {
@@ -723,6 +754,27 @@ function wireCover () {
     button.onclick = () => setMode(button.dataset.mode)
   }
   $('coverSource').onchange = (e) => loadCoverSource(e.target.value)
+  $('coverFrom').onchange = (e) => setCoverFrom(e.target.value)
+
+  $('coverPickFile').onclick = async () => {
+    const picked = await api.analyzePickFile()
+    if (!picked.ok) return
+    openScoreDialog(picked.path)
+  }
+
+  $('coverPickYt').onclick = async () => {
+    const url = await ask('유튜브 주소를 넣으세요', '')
+    if (!url) return
+    $('coverNote').textContent = '유튜브에서 받는 중…'
+    const result = await api.ytDownload({ url, dir: await api.ytFolder(), bitrate: 320 })
+    if (!result.ok) {
+      $('coverNote').textContent = ''
+      if (result.message === 'needs-install') return toast('먼저 [참고곡 분석]에서 도구를 설치해 주세요.')
+      return showProblem(result.message)
+    }
+    $('coverNote').textContent = `받았습니다: ${result.title}`
+    openScoreDialog(result.path)
+  }
 
   // 재생기에서 바로 "이 곡 커버"
   $('coverThis').onclick = async () => {
@@ -772,6 +824,102 @@ function showAnalysis (a) {
   ].join('\n')
   $('refResult').classList.remove('hidden')
   $('refApply').classList.remove('hidden')
+}
+
+function wireScore () {
+  const chordsOnly = () => document.querySelector('input[name="scoreMode"]:checked').value === 'chords'
+
+  $('scoreClose').onclick = () => {
+    api.transcribeCancel()
+    $('score').classList.add('hidden')
+  }
+
+  $('scoreInstallBtn').onclick = async () => {
+    $('scoreInstallBtn').disabled = true
+    $('scoreStatus').textContent = '설치하는 중… 몇 분 걸릴 수 있습니다.'
+    const result = await api.transcribeInstall()
+    $('scoreInstallBtn').disabled = false
+    if (!result.ok) return showProblem(result.message)
+    $('scoreInstall').classList.add('hidden')
+    $('scoreRun').disabled = false
+    $('scoreStatus').textContent = '설치했습니다.'
+  }
+
+  $('scoreRun').onclick = async () => {
+    if (!scoreFile) return toast('음원 파일이 없습니다.')
+    $('scoreRun').disabled = true
+    $('scoreRun').textContent = '만드는 중…'
+    $('scoreBarWrap').classList.remove('hidden')
+    $('scoreResult').classList.add('hidden')
+    $('scoreUse').classList.add('hidden')
+
+    const result = await api.transcribeRun({ file: scoreFile, chordsOnly: chordsOnly() })
+
+    $('scoreRun').disabled = false
+    $('scoreRun').textContent = '악보 만들기'
+    $('scoreBarWrap').classList.add('hidden')
+    $('scoreBar').style.width = '0%'
+
+    if (!result.ok) {
+      $('scoreStatus').textContent = ''
+      if (result.message === 'needs-install') {
+        $('scoreInstall').classList.remove('hidden')
+        return toast('보컬 분리 도구를 먼저 설치해 주세요.')
+      }
+      return showProblem(result.message)
+    }
+
+    scoreResult = result
+    const info = result.info
+    $('scoreStatus').textContent = '악보를 만들었습니다.'
+    $('scoreResult').textContent = [
+      `빠르기    ${info.bpm} BPM`,
+      `조성      ${info.key}`,
+      `마디      ${info.bars}마디 (${info.seconds}초)`,
+      info.chordsOnly
+        ? '멜로디    없음 — AI 가 새로 짓습니다'
+        : `음        ${info.notes}개` + (info.octaveShift ? ` (악보 표기에 맞춰 ${info.octaveShift}옥타브 올림)` : ''),
+      `코드      ${(info.chords || []).join(' - ') || '—'}`,
+      info.separated ? '보컬 분리  했음' : '보컬 분리  실패 — 정확도가 낮습니다'
+    ].join('\n')
+    $('scoreResult').classList.remove('hidden')
+    $('scoreUse').classList.remove('hidden')
+  }
+
+  $('scoreUse').onclick = () => {
+    if (!scoreResult) return
+    const name = (scoreFile || '').split(/[\\/]/).pop().replace(/\.[^.]+$/, '')
+    coverScore = {
+      dir: null,
+      abc: scoreResult.abc,
+      title: name,
+      lyrics: '',
+      style: ''
+    }
+    if (!$('title').value.trim()) $('title').value = `${name} (커버)`.slice(0, 60)
+    $('coverNote').textContent = `악보 준비됨: ${name}`
+    $('score').classList.add('hidden')
+    updateHint()
+    toast('가사와 스타일을 적고 [커버 만들기]를 누르세요.', 5000)
+  }
+
+  api.onTranscribeProgress((event) => {
+    if (event.type === 'progress') {
+      if (event.percent) $('scoreBar').style.width = `${event.percent}%`
+      if (event.note) $('scoreStatus').textContent = event.note
+    } else if (event.type === 'notice') {
+      toast(event.message, 6000)
+    } else if (event.type === 'stage') {
+      const labels = {
+        separate: '보컬을 분리하는 중… (가장 오래 걸립니다)',
+        decode: '음원을 읽는 중',
+        melody: '멜로디를 따는 중…'
+      }
+      if (event.status === 'start' && labels[event.stage]) {
+        $('scoreStatus').textContent = labels[event.stage]
+      }
+    }
+  })
 }
 
 function wireReference () {
@@ -1156,6 +1304,7 @@ wireLibrary()
 wireSettings()
 wireGenerate()
 wireCover()
+wireScore()
 wireReference()
 wireJobEvents()
 wireProblem()

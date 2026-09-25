@@ -34,8 +34,13 @@ const NEEDED_VRAM_GB = 8
 // 안 그러면 11GB 를 다 받고 나서야 못 쓴다는 걸 알게 된다.
 const MIN_COMPUTE = 8.0
 
-// 참고곡 분석에 쓰는 꾸러미. 설치할 때 같이 받고, 이미 설치한 사람은 필요할 때 받는다.
+// 참고곡 분석·유튜브 받기에 쓰는 꾸러미. 설치할 때 같이 받고, 이미 설치한 사람은
+// 필요할 때 받는다.
 const ANALYZE_PACKAGES = ['librosa==0.11.0', 'yt-dlp>=2025.1.1']
+// 채보(음원 → 악보)에는 보컬 분리가 필요하다. 이건 따로 받는다 — torchaudio 는
+// PyTorch 쪽 저장소에서 와야 버전이 맞는다.
+const TRANSCRIBE_PACKAGES = ['demucs']
+const TORCHAUDIO_PACKAGE = 'torchaudio'
 
 let win = null
 let worker = null
@@ -1221,6 +1226,65 @@ ipcMain.handle('analyze:pick-file', async () => {
   })
   if (picked.canceled || !picked.filePaths.length) return { ok: false, canceled: true }
   return { ok: true, path: picked.filePaths[0] }
+})
+
+// ── 채보: 음원 → 악보 ────────────────────────────────────────────────────────
+// 커버를 만들 재료다. demucs 로 보컬을 꺼내고 음을 따서 ABC 악보로 적는다.
+const transcribeScript = () => unpacked(path.join(__dirname, '..', 'python', 'transcribe.py'))
+
+let transcriber = null
+
+async function transcribeReady () {
+  const p = paths()
+  if (!await exists(p.python)) return false
+  try {
+    await withTimeout(run(p.python, ['-c', 'import demucs, torchaudio, librosa']), 120000)
+    return true
+  } catch {
+    return false
+  }
+}
+
+ipcMain.handle('transcribe:ready', () => transcribeReady())
+
+ipcMain.handle('transcribe:install', async () => {
+  const p = paths()
+  try {
+    const uv = await ensureUv()
+    send('transcribe:progress', { type: 'progress', note: '보컬 분리 도구를 설치하는 중… (약 300MB)' })
+    // torchaudio 는 torch 와 같은 CUDA 빌드여야 한다. PyTorch 저장소를 함께 본다.
+    await run(uv, ['pip', 'install', '--python', p.python,
+      '--index-url', TORCH_INDEX, '--index-strategy', 'unsafe-best-match', TORCHAUDIO_PACKAGE],
+    { stream: true, env: uvEnv() })
+    await run(uv, ['pip', 'install', '--python', p.python, ...TRANSCRIBE_PACKAGES],
+      { stream: true, env: uvEnv() })
+    log('채보 도구 설치 완료')
+    return { ok: true }
+  } catch (error) {
+    log('채보 도구 설치 실패', error.message)
+    return { ok: false, message: `채보 도구를 설치하지 못했습니다: ${error.message}` }
+  }
+})
+
+ipcMain.handle('transcribe:cancel', () => {
+  if (transcriber) { transcriber.kill(); transcriber = null }
+  return { ok: true }
+})
+
+ipcMain.handle('transcribe:run', async (_e, { file, chordsOnly }) => {
+  if (!file) return { ok: false, message: '음원 파일이 필요합니다.' }
+  if (transcriber) return { ok: false, message: '이미 악보를 만드는 중입니다.' }
+  if (!await transcribeReady()) return { ok: false, message: 'needs-install' }
+
+  const args = [transcribeScript(), '--file', file,
+    '--out', path.join(os.tmpdir(), 'norae-score')]
+  if (chordsOnly) args.push('--chords-only')
+
+  log('채보 시작', file, chordsOnly ? '(코드만)' : '(멜로디 포함)')
+  const result = await runJsonScript(args, 'transcribe:progress', (child) => { transcriber = child })
+  transcriber = null
+  if (result.ok) log('채보 완료', result.info)
+  return result
 })
 
 // ── 유튜브 → MP3 ──────────────────────────────────────────────────────────────

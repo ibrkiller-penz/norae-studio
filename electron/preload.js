@@ -46,6 +46,13 @@ contextBridge.exposeInMainWorld('norae', {
   setSettings: (patch) => ipcRenderer.invoke('settings:set', patch),
   resetSpeed: () => ipcRenderer.invoke('settings:reset-speed'),
 
+  // 채보: 음원 → 악보 (커버 재료)
+  transcribeReady: () => ipcRenderer.invoke('transcribe:ready'),
+  transcribeInstall: () => ipcRenderer.invoke('transcribe:install'),
+  transcribeRun: (options) => ipcRenderer.invoke('transcribe:run', options),
+  transcribeCancel: () => ipcRenderer.invoke('transcribe:cancel'),
+  onTranscribeProgress: on('transcribe:progress'),
+
   // 유튜브 → MP3 내려받기 (참고곡을 앱 안에서 바로 구한다)
   ytFolder: () => ipcRenderer.invoke('yt:folder'),
   ytPickFolder: () => ipcRenderer.invoke('yt:pick-folder'),

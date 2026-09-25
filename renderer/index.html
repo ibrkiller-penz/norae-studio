@@ -86,7 +86,14 @@
       <button class="mode on" data-mode="new">새 곡</button>
       <button class="mode" data-mode="cover">커버 · 편곡</button>
       <span id="coverPick" class="cover-pick hidden">
+        <select id="coverFrom">
+          <option value="song">내가 만든 곡</option>
+          <option value="file">MP3 넣기 (악보 추출)</option>
+          <option value="yt">유튜브에서 받기</option>
+        </select>
         <select id="coverSource"></select>
+        <button id="coverPickFile" class="ghost small hidden">파일 고르기</button>
+        <button id="coverPickYt" class="ghost small hidden">유튜브 주소</button>
         <span class="muted tiny" id="coverNote"></span>
       </span>
     </div>
@@ -257,6 +264,47 @@
       <button id="problemCopy" class="ghost">오류 내용 복사</button>
       <button id="problemLog" class="ghost">기록 파일 열기</button>
     </div>
+  </div>
+</div>
+
+<!-- 채보: 음원 → 악보 ---------------------------------------------------------->
+<div id="score" class="overlay hidden">
+  <div class="setup-card">
+    <h1>음원에서 악보 만들기</h1>
+    <p class="muted">보컬을 분리해서 멜로디를 따고, 마디마다 코드를 붙여 악보로 적습니다.
+      그 악보로 커버를 만듭니다.</p>
+
+    <div class="field">
+      <span class="muted">원본 음원</span>
+      <p id="scoreFileName" class="muted tiny">선택된 파일 없음</p>
+    </div>
+
+    <div class="field">
+      <span class="muted">어디까지 따올까요</span>
+      <label class="row-check"><input type="radio" name="scoreMode" value="full" checked>
+        <span><b>멜로디까지</b> — 원곡의 가락을 따라갑니다. 진짜 커버에 가깝습니다.</span></label>
+      <label class="row-check"><input type="radio" name="scoreMode" value="chords">
+        <span><b>코드·템포만</b> — 화성과 빠르기만 가져오고 가락은 AI 가 새로 짓습니다.
+          멜로디 채보보다 정확합니다.</span></label>
+    </div>
+
+    <div id="scoreInstall" class="adopt hidden">
+      <b>보컬 분리 도구가 아직 설치되지 않았습니다.</b>
+      <span class="muted">demucs · torchaudio — 약 300MB, 한 번만 받으면 됩니다.</span>
+      <button id="scoreInstallBtn" class="primary small">설치</button>
+    </div>
+
+    <div class="bar hidden" id="scoreBarWrap"><div id="scoreBar"></div></div>
+    <p id="scoreStatus" class="muted tiny"></p>
+    <pre id="scoreResult" class="log hidden"></pre>
+
+    <div class="setup-actions">
+      <button id="scoreRun" class="primary">악보 만들기</button>
+      <button id="scoreUse" class="primary hidden">이 악보로 커버</button>
+      <button id="scoreClose" class="ghost">닫기</button>
+    </div>
+    <p class="muted tiny">멜로디 채보는 원곡의 윤곽을 옮기는 수준입니다. 음 하나하나가 정확하지는
+      않습니다. 보컬이 또렷한 음원일수록 잘 나옵니다.</p>
   </div>
 </div>
 
