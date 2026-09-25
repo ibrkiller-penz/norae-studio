@@ -1,0 +1,6 @@
+{
+  "projects": { "default": "happymp3" },
+  "targets": {
+    "happymp3": { "hosting": { "norae": ["norae-studio"] } }
+  }
+}

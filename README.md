@@ -19,6 +19,24 @@
 Visual C++ 재배포 가능 패키지(x64)가 없으면 AI 엔진이 뜨지 않는다. 프로그램이
 그 경우를 감지해서 안내한다.
 
+## 받는 곳
+
+https://norae-studio.web.app (비밀번호 `1004`)
+
+설치 파일은 GitHub 릴리스에 있고, 사이트는 안내와 링크만 제공한다. 사이트의 비밀번호는
+다운로드 주소를 AES-GCM 으로 감싸 둔 것이라 소스를 봐도 주소가 보이지 않는다. 다만
+**잠금장치가 아니라 문턱이다** — 네 자리는 1만 번이면 다 해보고, 릴리스 자체는 공개다.
+진짜로 막아야 한다면 릴리스를 비공개로 두고 서버에서 인증해야 한다.
+
+비밀번호나 링크를 바꾸려면:
+
+```bash
+node site/build.mjs <릴리스주소> <버전> <바이트수>
+firebase deploy --only hosting
+```
+
+`NORAE_SITE_PASSWORD` 환경변수로 비밀번호를 바꿀 수 있다.
+
 ## 쓰는 법
 
 ```bash
@@ -65,7 +83,44 @@ npm run dist
 | `decode` | VAE 로 48kHz 24bit WAV | `audio.wav` |
 
 각 단계 결과를 디스크에 남기기 때문에, 중간에 끊긴 곡은 보관함에서 눌러 **이어서 만들 수 있다**.
-완성된 뒤에는 중간 파일을 지워 폴더를 정리한다.
+완성된 뒤에는 중간 파일을 지워 폴더를 정리한다. 단 악보(ABC)는 `meta.json` 에 글로 남긴다 —
+커버를 만들 때 다시 쓰기 때문이다.
+
+### 커버 · 편곡
+
+`plan()` 은 `request.abc` 가 있으면 작곡 단계를 건너뛰고 그 악보를 그대로 쓴다
+("Using provided score"). 그래서 만든 곡의 악보를 다시 넘기면 **멜로디와 코드는 그대로 두고
+편곡만 새로** 할 수 있다. 같은 곡의 다른 장르 버전이 된다.
+
+원곡 음원을 넣어 목소리만 바꾸는 식의 커버는 **불가능하다**. YuE2 에는 참조 오디오 입력이 없다.
+
+### 참고곡 분석
+
+가진 음원에서 템포·조성·코드진행·음색을 재서 영어 스타일 설명으로 옮긴다.
+**멜로디는 따오지 않는다.** 완성된 믹스에서 자동 채보한 음은 뭉개져서 오히려 이상한 악보가
+되기 때문이고, 템포·조성·코드진행은 측정값이지 남의 멜로디가 아니기 때문이다.
+
+| 재는 것 | 방법 |
+|---|---|
+| 템포 | `librosa.beat.beat_track` |
+| 조성 | Krumhansl-Schmuckler 프로파일과 크로마 분포의 상관 |
+| 코드 | 하모닉 성분 크로마를 4박 단위로 48개 코드 틀과 맞춤 → 가장 자주 반복되는 4개 토막 |
+| 음색 | 스펙트럼 중심·롤오프, 셈여림 편차, 타악기 비중 |
+
+정확도 확인 — 악보를 아는 음원(직접 만든 곡)으로 대조했을 때:
+
+| | 실제 악보 | 분석 결과 |
+|---|---|---|
+| 조성 | `K:Db` | Bb minor → 나란한조 **Db major** |
+| 템포 | `Q:1/4=118` | **117.5** |
+| 코드 | Ebm7 · Ab7 · Dbmaj7 · Bb7 | Ebm7 · Abmaj7 · Dbmaj7 · Bbm7 |
+
+조성 확신(`keyConfidence`)이 0.5 아래면 음악이 아니거나 조가 자주 바뀌는 곡이라 화면에서 경고한다.
+
+### 유튜브 → MP3
+
+참고할 음원을 앱 안에서 바로 받는다. yt-dlp 가 받고, MP3 변환은 ffmpeg 를 직접 부른다
+(yt-dlp 의 MP3 후처리는 ffprobe 까지 찾는데 imageio-ffmpeg 에는 ffmpeg 하나뿐이다).
 
 ### 예상 시간은 스스로 맞춰 간다
 
@@ -115,6 +170,7 @@ npm test
 | YuE2 | `github.com/multimodal-art-projection/YuE` |
 | 모델 가중치 | `huggingface.co` |
 | 새 버전 확인 | **본인 GitHub 릴리스** (설정에서 바꾸거나 끌 수 있다) |
+| 참고곡 받기 | 이용자가 넣은 주소 (yt-dlp) |
 
 한 번 설치하고 나면 곡을 만들 때는 인터넷이 필요 없다. 위 주소들이 전부 사라져도
 이미 설치된 실행환경으로 계속 돌아간다.
@@ -135,7 +191,11 @@ electron/main.js      설치, 워커 관리, 대기열, 곡 폴더/MP3, 업데�
 electron/preload.js   화면에 열어주는 함수 목록 (여기 없는 건 화면에서 못 쓴다)
 electron/updater.js   GitHub 릴리스 확인·다운로드
 electron/speed.js     생성 속도 측정·학습 (순수 모듈)
-electron/speed.test.js  위 모듈 확인 — `npm test`
+electron/models.js    YuE2 모델 갱신 확인 (순수 모듈)
+electron/*.test.js    위 두 모듈 확인 — `npm test`
+python/analyze.py     참고곡 분석 (템포·조성·코드·음색)
+python/ytdl.py        유튜브 → MP3
+site/                 다운로드 페이지 (Firebase Hosting)
 renderer/index.html   화면 구조
 renderer/styles.css   색과 배치
 renderer/app.js       화면 동작 (프리셋, 진행률 추정, 보관함, 재생)
