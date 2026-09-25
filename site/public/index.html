@@ -84,7 +84,7 @@
       <circle cx="164" cy="162" r="20" fill="#fff"/>
     </svg>
     <h1>노래<span>공방</span></h1>
-    <span class="ver">버전 1.2.3</span>
+    <span class="ver">버전 1.2.4</span>
   </header>
 
   <p class="lead">가사와 분위기를 적으면 <b>반주와 노래가 함께 들어간 음원</b>이 나옵니다.
@@ -150,7 +150,7 @@
 
 <script>
 // 다운로드 주소는 비밀번호로 암호화되어 있다. 아래 문자열만 봐서는 주소를 알 수 없다.
-const PAYLOAD = {"v":1,"salt":"9OkISJteCfpv4DPffUIAZw==","iv":"bo0Hs7IS9NjRIXey","data":"hXOx9aiNuyGfdEd8kTtv+YT15zZIrHsd7C1aB4medXtcdbnfqdVfBMiSLNOhl5Xdk2kX3A66buHT6gSn9vB/kGooq2wjhQXMr5rRDjRDA1zVohiaNmPBL1ImDm5++tEvJ+WXoZoo5H70dX3h+oMReAl+3mkrZei6L0X8xEgBNcnmZzzWdgU3QLNWkGmmjg/eI3hts5I5FGkK1zChxMeTwA==","iterations":200000};
+const PAYLOAD = {"v":1,"salt":"z4t6mxmbZ7S39Yux6bQ1kw==","iv":"fAs41f/OcteqW74F","data":"mZy1Z/+u+LF7WGTPqNu27CeIJaoSXGwZ94v4BiVzwagkXEMHV8kCajBZbd0VgFMqEWKIgDm/Hx1UDbEfRPauXQAw9tM+9+lo3WR2vqAoxpL5vJsDA/elOrP75MPD1CFLFa8TqjK7WvXui8eDyV61qHY0c+xBftGZjwieiiF2rVpd0XrdAIUrIwFW02CPS2EW2mn93onLmIaJixhqNHrIjQ==","iterations":200000};
 
 const $ = (id) => document.getElementById(id);
 const b64 = (text) => Uint8Array.from(atob(text), (c) => c.charCodeAt(0));
