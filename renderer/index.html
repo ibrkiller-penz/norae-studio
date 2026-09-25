@@ -282,9 +282,11 @@
 
     <div class="field">
       <span class="muted">어디까지 따올까요</span>
-      <label class="row-check"><input type="radio" name="scoreMode" value="full" checked>
-        <span><b>멜로디까지</b> — 원곡의 가락을 따라갑니다. 진짜 커버에 가깝습니다.</span></label>
-      <label class="row-check"><input type="radio" name="scoreMode" value="chords">
+      <label class="row-check"><input type="radio" name="scoreMode" value="full">
+        <span><b>멜로디까지</b> — 원곡의 가락을 따라갑니다.
+          <b>실제 노래에서는 잘 맞지 않습니다</b> — 음이 가사 음절보다 많아지고 음역이
+          사람 밖으로 벗어나기 쉽습니다. 보컬이 또렷하고 단순한 음원에만 쓰세요.</span></label>
+      <label class="row-check"><input type="radio" name="scoreMode" value="chords" checked>
         <span><b>코드·템포만</b> — 원곡의 화성·빠르기·조성만 가져와 스타일에 넣습니다.
           가락은 AI 가 새로 짓고 <b>가사를 제대로 부릅니다.</b> 멜로디 채보보다 훨씬 안정적입니다.</span></label>
     </div>

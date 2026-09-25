@@ -32,6 +32,12 @@ const ORDER = ['plan', 'semantic', 'synth', 'decode']
 // 실제 속도를 재서 settings.json 에 쌓고, 여기서 그 값으로 갈아끼운다. 그래서 어떤 그래픽카드든
 // 두세 곡이면 "남은 시간"이 맞아 들어간다.
 const SPEED = { plan: 14, semantic: 30, synthPerToken: 0.034, decode: 8, load: 55 }
+
+// 모델이 한 번에 만들 수 있는 노래 토큰의 상한. yue2 의 GenerationConfig 에
+// semantic.max_tokens = 9000 으로 박혀 있다. 그 너머는 만들다 말고 잘린다.
+const MAX_SONG_TOKENS = 9000
+// 토큰 하나가 몇 초어치인지. 실측: 3,863토큰 → 166초 음원.
+const TOKENS_PER_SECOND = 23
 let learned = null // settings.speed — 이 컴퓨터에서 실제로 잰 값
 
 const clamp = (value, low, high) => Math.min(high, Math.max(low, value))
@@ -69,8 +75,14 @@ function estimate (lyrics, { firstRun = true, skipPlan = false } = {}) {
 // ── 가사 다듬기 ───────────────────────────────────────────────────────────────
 // 모델은 밋밋한 [Verse]/[Chorus] 표시로 학습됐다. 번호가 붙거나 꾸며진 태그,
 // 가사 위에 붙은 마크다운 제목 줄은 둘 다 모델을 헷갈리게 한다.
+// 순서가 중요하다. 위에서부터 먼저 맞는 것을 쓴다.
+// pre-chorus 와 post-chorus 를 chorus 보다 먼저 봐야 한다. 안 그러면 둘 다
+// 그냥 Chorus 가 되어 곡 구조가 뭉개진다.
 const TAG_RULES = [
   [/pre[\s-]*chorus|프리\s*코러스/i, 'Pre-Chorus'],
+  // YuE2 가 아는 구간에 post-chorus 는 없다. 후렴 뒤에 붙는 짧은 대목이라
+  // 가장 가까운 것은 Chorus 다. 다만 pre 와 섞이지 않게 따로 잡아 둔다.
+  [/post[\s-]*chorus|포스트\s*코러스/i, 'Chorus'],
   [/chorus|hook|refrain|후렴|코러스/i, 'Chorus'],
   [/verse|절|벌스/i, 'Verse'],
   [/bridge|브릿지/i, 'Bridge'],
@@ -92,8 +104,21 @@ function instrumentalStyle (style) {
     : `${style}, instrumental, no vocals, no singing, melody carried by lead instrument`
 }
 
+// 수노처럼 태그 안에 지시를 적는 사람이 많다.
+//   [Verse 1: mid-range warm female vocal, breathy and husky tone]
+// YuE2 는 그걸 못 읽는다. 대괄호 안은 구간 이름으로만 쓰이고, 악기·보컬 지시는
+// [Tags](스타일 프롬프트)에서만 받는다. 그래서 태그는 기본형으로 되돌려야 하는데,
+// 적어 준 지시를 그냥 버리면 안 된다. 뽑아내서 스타일 쪽으로 옮겨 준다.
+function extractTagDescription (inside) {
+  // "Verse 1: warm female vocal, husky" → {name:"Verse 1", description:"warm female vocal, husky"}
+  const colon = inside.indexOf(':')
+  if (colon < 0) return { name: inside.trim(), description: '' }
+  return { name: inside.slice(0, colon).trim(), description: inside.slice(colon + 1).trim() }
+}
+
 function cleanLyrics (raw) {
   const notes = []
+  const descriptions = []
   let lines = raw.replace(/\r\n/g, '\n').split('\n')
 
   const titles = lines.filter((line) => /^\s*#/.test(line)).length
@@ -106,8 +131,10 @@ function cleanLyrics (raw) {
   lines = lines.map((line) => {
     const match = line.match(/^\s*\[([^\]]+)\]\s*$/)
     if (!match) return line
-    const rule = TAG_RULES.find(([pattern]) => pattern.test(match[1]))
+    const { name, description } = extractTagDescription(match[1])
+    const rule = TAG_RULES.find(([pattern]) => pattern.test(name))
     if (!rule) return line
+    if (description) descriptions.push(description)
     const tag = `[${rule[1]}]`
     if (tag !== line.trim()) retagged += 1
     return tag
@@ -115,7 +142,24 @@ function cleanLyrics (raw) {
   if (retagged) notes.push(`구간 태그 ${retagged}개를 기본 형태로 바꿨습니다`)
 
   const text = lines.join('\n').replace(/\n{3,}/g, '\n\n').trim()
-  return { text, notes }
+  return { text, notes, descriptions }
+}
+
+// 태그에서 뽑아낸 지시들을 스타일 프롬프트에 쓸 한 줄로 합친다. 같은 말이 여러 구간에
+// 되풀이되므로(후렴마다 같은 보컬 지시) 중복은 지운다.
+function mergeDescriptions (descriptions) {
+  const seen = new Set()
+  const parts = []
+  for (const chunk of descriptions) {
+    for (const piece of chunk.split(',')) {
+      const trimmed = piece.trim()
+      const key = trimmed.toLowerCase()
+      if (!trimmed || seen.has(key)) continue
+      seen.add(key)
+      parts.push(trimmed)
+    }
+  }
+  return parts.join(', ')
 }
 
 // ── 화면 상태 ─────────────────────────────────────────────────────────────────
@@ -809,6 +853,12 @@ function setCoverFrom (from) {
 
 // 음원 하나를 받아 채보 창을 연다. 두 경로(파일 고르기 / 유튜브)가 여기로 모인다.
 function openScoreDialog (filePath) {
+  // 새 곡을 가져왔는데 가사칸에 앞 곡 가사가 그대로 남아 있으면, 그 가사로 노래한다.
+  // 실제로 박화요비 곡 악보에 이선희 가사가 얹혀 나왔다. 이전 곡 것이면 비운다.
+  if (scoreFile && scoreFile !== filePath && $('lyrics').value.trim()) {
+    $('lyrics').value = ''
+    toast('새 곡이라 가사칸을 비웠습니다. 이 곡의 가사를 넣어 주세요.', 6000)
+  }
   scoreFile = filePath
   $('scoreFileName').textContent = filePath.split(/[\\/]/).pop()
   $('scoreResult').classList.add('hidden')
@@ -980,8 +1030,18 @@ function wireScore () {
 
     coverScore = { dir: null, abc: scoreResult.abc, title: name, lyrics: '', style: '' }
     $('coverNote').textContent = `악보 준비됨: ${name}`
+
+    // 악보에는 Q:1/4=136 이라 써 놓고 스타일 프리셋에는 86 BPM 이 들어 있으면
+    // 모델이 상반된 지시를 받는다. 실제로 그렇게 나간 곡이 있었다.
+    // 악보에서 잰 템포·조성을 스타일에도 넣어 둔다.
+    const measured = (scoreResult.info && scoreResult.info.prompt) || ''
+    if (measured && !$('style').value.includes(measured)) {
+      const existing = $('style').value.trim()
+      $('style').value = existing ? `${existing}, ${measured}` : measured
+    }
+
     updateHint()
-    toast('가사와 스타일을 적고 [커버 만들기]를 누르세요.', 5000)
+    toast('가사와 스타일을 적고 [커버 만들기]를 누르세요. 이 곡의 가사를 꼭 새로 넣으세요.', 6000)
   }
 
   api.onTranscribeProgress((event) => {
@@ -1204,8 +1264,8 @@ function wireGenerate () {
 
   $('generate').onclick = async () => {
     const instrumental = $('instrumental').checked
-    const style = $('style').value.trim()
-    if (!style) return toast('스타일 프롬프트를 적어주세요.')
+    let payloadStyle = $('style').value.trim()
+    if (!payloadStyle) return toast('스타일 프롬프트를 적어주세요.')
 
     let lyrics = INSTRUMENTAL_LYRICS
     if (!instrumental) {
@@ -1217,6 +1277,22 @@ function wireGenerate () {
       const cleaned = cleanLyrics(raw)
       lyrics = cleaned.text
       if (cleaned.notes.length) toast(cleaned.notes.join(' · '), 4000)
+
+      // 태그 안에 적은 악기·보컬 지시는 YuE2 가 읽지 못한다. 버리지 말고
+      // 스타일 쪽으로 옮긴다. 거기가 그 말이 실제로 읽히는 자리다.
+      const moved = mergeDescriptions(cleaned.descriptions)
+      if (moved && !$('style').value.includes(moved)) {
+        const keep = await confirmAsk(
+          '구간 태그 안에 적으신 지시는 AI 가 읽지 못합니다.\n' +
+          '스타일 프롬프트로 옮길까요?\n\n' + moved.slice(0, 300),
+          '옮기기')
+        if (keep) {
+          const existing = $('style').value.trim()
+          $('style').value = existing ? `${existing}, ${moved}` : moved
+          payloadStyle = $('style').value.trim()
+          toast('스타일에 옮겼습니다.', 4000)
+        }
+      }
     }
 
     // 커버는 원곡의 악보가 있어야 성립한다.
@@ -1225,9 +1301,21 @@ function wireGenerate () {
     }
 
     const guess = estimate(lyrics, { firstRun: !warmed, skipPlan: mode === 'cover' })
+
+    // 모델은 노래 토큰을 MAX_SONG_TOKENS 개까지만 만든다. 그 너머는 그냥 잘린다.
+    // 만들고 나서 "뒤가 없네" 하는 것보다 미리 말해 주는 편이 낫다.
+    if (guess.base.semantic >= MAX_SONG_TOKENS * 0.9) {
+      const minutes = Math.round(MAX_SONG_TOKENS / TOKENS_PER_SECOND / 60)
+      const go = await confirmAsk(
+        `가사가 깁니다. 이 모델은 한 번에 약 ${minutes}분까지만 만들 수 있어서 ` +
+        '뒷부분이 잘릴 수 있습니다. 한 절을 덜어내거나, 나눠서 만드는 편이 좋습니다.',
+        '그래도 만들기')
+      if (!go) return
+    }
+
     const payload = {
       title: $('title').value.trim() || '무제',
-      style: instrumental ? instrumentalStyle(style) : style,
+      style: instrumental ? instrumentalStyle(payloadStyle) : payloadStyle,
       lyrics,
       instrumental,
       seed: $('seed').value.trim(),
@@ -1303,6 +1391,20 @@ function wireJobEvents () {
     runningJob = null
     warmed = true
     setRunning(false)
+
+    // 워커는 예전부터 "잘렸다"고 알려 줬는데 화면이 그걸 버리고 있었다.
+    // 가사 뒷부분이 사라진 채로 완성했다고만 하니 이유를 알 수 없었다.
+    const cut = song.truncated || {}
+    if (cut.semantic) {
+      showProblem(
+        `"${song.title}" 은(는) 만들어졌지만 뒷부분이 잘렸습니다.\n\n` +
+        `이 모델은 한 번에 약 ${Math.round(MAX_SONG_TOKENS / TOKENS_PER_SECOND / 60)}분까지만 ` +
+        '만들 수 있습니다. 가사가 그보다 길면 남은 대목은 노래로 만들어지지 않습니다.\n\n' +
+        '가사를 줄이거나, 절을 나눠 여러 곡으로 만들어 보세요.')
+    } else if (cut.abc) {
+      toast('악보가 길어 일부가 잘렸습니다. 가사를 줄이면 더 안정적입니다.', 6000)
+    }
+
     toast(`"${song.title}" 완성! (${mmss(song.wallSeconds)})`, 5000)
     // 방금 곡에서 잰 속도를 반영해 다음 예상 시간을 고친다.
     await refreshSettings()

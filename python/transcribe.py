@@ -335,14 +335,23 @@ def abc_length(units: int) -> str:
 # 그래서 채보한 그대로 적으면 YuE2 가 거기서 또 한 옥타브 내려 부를 수 있다.
 # 적을 때는 그 관행에 맞춰 올려 둔다.
 NOTATION_RANGE = (76, 88)
+# 사람이 낼 수 있는 한계. 소프라노 최고음이 대략 MIDI 88(E6) 근처다.
+# 실측에서 MIDI 100(E7) 까지 적힌 악보가 나왔다 — 아무도 못 부르는 음이다.
+SINGABLE = (48, 93)
 
 
 def transpose_to_notation(events):
-    """멜로디를 악보 표기 음역으로 옮긴다. 옥타브 단위로만 움직인다."""
+    """멜로디를 악보 표기 음역으로 옮기고, 사람이 못 낼 음은 끌어내린다.
+
+    중앙값만 보고 옥타브를 옮기면 꼬리가 밖으로 튀어나간다. 채보는 이따금 배음을
+    잘못 잡아 한두 음이 훌쩍 높게 나오는데, 그 상태로 옥타브를 올리면 MIDI 100
+    같은 음이 악보에 박힌다. 옮긴 뒤에 남는 것들은 옥타브 단위로 접어 넣는다.
+    """
     import numpy as np
     sung = [n for _s, _l, n in events if n is not None]
     if not sung:
         return events, 0
+
     center = float(np.median(sung))
     low, high = NOTATION_RANGE
     shift = 0
@@ -350,9 +359,20 @@ def transpose_to_notation(events):
         shift += 12
     while center + shift > high:
         shift -= 12
-    if shift == 0:
-        return events, 0
-    return [(s, l, None if n is None else n + shift) for s, l, n in events], shift
+
+    floor, ceiling = SINGABLE
+    out = []
+    for start, length, note in events:
+        if note is None:
+            out.append((start, length, None))
+            continue
+        value = note + shift
+        while value > ceiling:
+            value -= 12
+        while value < floor:
+            value += 12
+        out.append((start, length, value))
+    return out, shift
 
 
 def describe_tempo(bpm: float) -> str:
@@ -490,6 +510,10 @@ def transcribe(path: Path, workdir: Path, separate: bool, max_seconds: float,
     else:
         events, shift = transpose_to_notation(events)
         abc = write_abc(events, chords, key, mode, bpm, title=path.stem)
+        # 악보에는 Q:1/4=136 이라 적어 놓고 스타일에는 86 BPM 이라고 적으면 모델이
+        # 상반된 지시를 받는다. 실제로 그렇게 나간 곡이 있었다. 악보와 같은 값을
+        # 스타일에도 쓸 수 있게 함께 돌려준다.
+        prompt = to_style_prompt(bpm, key, mode, chords)
     info = {
         "bpm": round(bpm, 1),
         "key": f"{spell(key)} {mode}",
