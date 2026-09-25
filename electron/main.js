@@ -1223,6 +1223,98 @@ ipcMain.handle('analyze:pick-file', async () => {
   return { ok: true, path: picked.filePaths[0] }
 })
 
+// ── 유튜브 → MP3 ──────────────────────────────────────────────────────────────
+// 참고곡을 구하려고 다른 다운로드 프로그램을 따로 띄울 필요가 없게 안에 넣어 둔다.
+// 받은 MP3 는 그대로 [참고곡 분석]에 넣을 수 있다.
+let downloader = null
+
+const ytScript = () => unpacked(path.join(__dirname, '..', 'python', 'ytdl.py'))
+
+ipcMain.handle('yt:pick-folder', async () => {
+  const picked = await dialog.showOpenDialog(win, {
+    title: 'MP3 를 저장할 폴더',
+    defaultPath: app.getPath('music'),
+    properties: ['openDirectory', 'createDirectory'],
+    buttonLabel: '이 폴더에 저장'
+  })
+  if (picked.canceled || !picked.filePaths.length) return { ok: false, canceled: true }
+  await writeSettings({ ytDir: picked.filePaths[0] })
+  return { ok: true, path: picked.filePaths[0] }
+})
+
+ipcMain.handle('yt:folder', async () => {
+  const settings = await readSettings()
+  return settings.ytDir || path.join(app.getPath('music'), '노래공방 참고곡')
+})
+
+ipcMain.handle('yt:cancel', () => {
+  if (downloader) { downloader.kill(); downloader = null }
+  return { ok: true }
+})
+
+/**
+ * 파이썬 스크립트를 돌리며 stdout 의 JSON 이벤트를 화면으로 흘려보낸다.
+ * {type:"done"} 이 결과가 되고, {type:"error"} 는 실패 사유가 된다.
+ * 취소할 수 있게 자식 프로세스를 onSpawn 으로 넘겨준다.
+ */
+function runJsonScript (args, channel, onSpawn) {
+  const p = paths()
+  return new Promise((resolve) => {
+    const child = spawn(p.python, ['-u', ...args], {
+      env: { ...process.env, PYTHONIOENCODING: 'utf-8', PYTHONUTF8: '1' },
+      windowsHide: true
+    })
+    if (onSpawn) onSpawn(child)
+
+    let result = null
+    let failure = null
+    let buffer = ''
+
+    child.stdout.on('data', (chunk) => {
+      buffer += chunk
+      const lines = buffer.split(/\r?\n/)
+      buffer = lines.pop() // 마지막 조각은 아직 안 끝난 줄이다
+      for (const line of lines) {
+        if (!line.trim()) continue
+        try {
+          const event = JSON.parse(line)
+          if (event.type === 'done') result = event
+          else if (event.type === 'error') failure = event.message
+          else send(channel, event)
+        } catch { /* JSON 이 아닌 줄은 흘려보낸다 */ }
+      }
+    })
+    child.stderr.on('data', (d) => log(`${channel} stderr`, String(d).trim().slice(-400)))
+    child.on('error', (error) => resolve({ ok: false, message: error.message }))
+    child.on('close', (code) => resolve(result
+      ? { ok: true, ...result }
+      : { ok: false, message: failure || `실패했습니다 (code ${code}).` }))
+  })
+}
+
+ipcMain.handle('yt:info', async (_e, url) => {
+  if (!url) return { ok: false, message: '주소가 필요합니다.' }
+  if (!await analyzeReady()) return { ok: false, message: 'needs-install' }
+  return runJsonScript([ytScript(), '--url', url, '--info'], 'yt:progress')
+})
+
+ipcMain.handle('yt:download', async (_e, { url, dir, bitrate }) => {
+  if (!url) return { ok: false, message: '주소가 필요합니다.' }
+  if (downloader) return { ok: false, message: '이미 받는 중입니다.' }
+  if (!await analyzeReady()) return { ok: false, message: 'needs-install' }
+
+  const target = dir || path.join(app.getPath('music'), '노래공방 참고곡')
+  await fsp.mkdir(target, { recursive: true })
+  log('유튜브 내려받기', url, '→', target)
+
+  const result = await runJsonScript(
+    [ytScript(), '--url', url, '--out', target, '--bitrate', String(bitrate || 320)],
+    'yt:progress', (child) => { downloader = child })
+  downloader = null
+  if (result.ok) log('내려받기 완료', result.path, `${Math.round(result.bytes / 1024)}KB`)
+  return result
+})
+
 let analyzer = null
 
 ipcMain.handle('analyze:cancel', () => {

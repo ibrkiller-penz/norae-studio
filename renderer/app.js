@@ -793,6 +793,7 @@ function wireReference () {
 
   $('refClose').onclick = () => {
     api.analyzeCancel()
+    api.ytCancel()
     $('ref').classList.add('hidden')
   }
 
@@ -804,33 +805,27 @@ function wireReference () {
     if (!result.ok) return showProblem(result.message)
     $('refInstall').classList.add('hidden')
     $('refRun').disabled = false
-    refStatus('설치했습니다. 주소를 넣거나 파일을 고르세요.')
+    refStatus('설치했습니다. 음원 파일을 고르거나 유튜브에서 받으세요.')
+  }
+
+  const useFile = (filePath) => {
+    refFilePath = filePath
+    $('refFileName').textContent = filePath.split(/[\\/]/).pop()
   }
 
   $('refFile').onclick = async () => {
     const picked = await api.analyzePickFile()
     if (!picked.ok) return
-    refFilePath = picked.path
-    $('refFileName').textContent = picked.path.split(/[\\/]/).pop()
-    $('refUrl').value = '' // 파일과 주소 둘 중 하나만 쓴다
+    useFile(picked.path)
   }
 
-  // 주소를 치면 파일 선택은 물린다.
-  $('refUrl').oninput = () => {
-    if ($('refUrl').value.trim()) {
-      refFilePath = null
-      $('refFileName').textContent = ''
-    }
-  }
-
-  $('refRun').onclick = async () => {
-    const url = $('refUrl').value.trim()
-    if (!url && !refFilePath) return toast('유튜브 주소를 넣거나 음원 파일을 고르세요.')
+  const runAnalysis = async () => {
+    if (!refFilePath) return toast('참고할 음원 파일을 먼저 고르세요.')
     setBusy(true)
     $('refResult').classList.add('hidden')
     $('refApply').classList.add('hidden')
     refStatus('시작하는 중…')
-    const result = await api.analyzeRun(url ? { url } : { file: refFilePath })
+    const result = await api.analyzeRun({ file: refFilePath })
     setBusy(false)
     if (!result.ok) {
       refStatus('')
@@ -839,6 +834,63 @@ function wireReference () {
     refStatus('분석을 마쳤습니다.')
     showAnalysis(result.analysis)
   }
+
+  $('refRun').onclick = runAnalysis
+
+  // ── 유튜브 → MP3 ────────────────────────────────────────────────────────────
+  const ytStatus = (text) => { $('ytStatus').textContent = text || '' }
+
+  const refreshYtFolder = async () => { $('ytFolder').textContent = await api.ytFolder() }
+
+  $('ytFolderBtn').onclick = async () => {
+    const picked = await api.ytPickFolder()
+    if (!picked.ok) return
+    $('ytFolder').textContent = picked.path
+  }
+
+  $('ytGo').onclick = async () => {
+    const url = $('ytUrl').value.trim()
+    if (!url) return toast('유튜브 주소를 넣으세요.')
+    $('ytGo').disabled = true
+    $('ytBarWrap').classList.remove('hidden')
+    ytStatus('주소를 확인하는 중…')
+
+    const result = await api.ytDownload({ url, dir: $('ytFolder').textContent, bitrate: 320 })
+
+    $('ytGo').disabled = false
+    $('ytBarWrap').classList.add('hidden')
+    $('ytBar').style.width = '0%'
+
+    if (!result.ok) {
+      ytStatus('')
+      if (result.message === 'needs-install') {
+        $('refInstall').classList.remove('hidden')
+        return toast('먼저 분석 도구를 설치해 주세요.')
+      }
+      return showProblem(result.message)
+    }
+
+    ytStatus(`받았습니다: ${result.path}`)
+    useFile(result.path)
+    if ($('ytThenAnalyze').checked) runAnalysis()
+  }
+
+  api.onYtProgress((event) => {
+    if (event.type === 'info') {
+      const mins = event.seconds ? ` · ${Math.floor(event.seconds / 60)}분 ${event.seconds % 60}초` : ''
+      return ytStatus(`${event.title}${mins}`)
+    }
+    if (event.type === 'progress') {
+      $('ytBar').style.width = `${event.percent}%`
+      return ytStatus(`${event.note} ${event.percent}%`)
+    }
+    if (event.type === 'stage' && event.stage === 'convert') {
+      ytStatus(event.status === 'start' ? 'MP3로 바꾸는 중…' : 'MP3 변환 완료')
+      if (event.status === 'start') $('ytBar').style.width = '100%'
+    }
+  })
+
+  refreshYtFolder()
 
   $('refApply').onclick = () => {
     if (!refAnalysis) return

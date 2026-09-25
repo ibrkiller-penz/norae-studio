@@ -298,3 +298,17 @@ button.mode.on {
 .cover-pick { display: flex; align-items: center; gap: 8px; min-width: 0; flex: 1; }
 .cover-pick select { max-width: 260px; padding: 5px 9px; font-size: 13px; }
 .cover-pick .tiny { white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+
+/* ── 참고곡 분석 / 유튜브 받기 ───────────────────────────────────────────────── */
+.pick-row { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; }
+.pick-row .tiny { word-break: break-all; }
+.yt-box {
+  background: var(--panel-2);
+  border: 1px solid var(--line);
+  border-radius: 10px;
+  padding: 10px 12px;
+  margin-bottom: 12px;
+}
+.yt-box summary { cursor: pointer; font-size: 13px; color: var(--muted); }
+.yt-box[open] summary { margin-bottom: 10px; color: var(--text); }
+.yt-box .field { margin-bottom: 8px; }

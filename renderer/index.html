@@ -264,21 +264,40 @@
 <div id="ref" class="overlay hidden">
   <div class="setup-card">
     <h1>참고곡 분석</h1>
-    <p class="muted">참고할 곡의 <b>템포·조성·코드진행·음색</b>을 재서 스타일 프롬프트로 만듭니다.
-      멜로디를 베끼지 않습니다 — 잰 값을 참고해서 AI 가 새로 작곡합니다.</p>
+    <p class="muted">가지고 있는 음원의 <b>템포·조성·코드진행·음색</b>을 재서 스타일 프롬프트로 만듭니다.
+      멜로디를 베끼지 않습니다 — 잰 값을 <b>참고</b>해서 AI 가 새로 작곡합니다.</p>
 
-    <label class="field">
-      <span class="muted">유튜브 주소 (또는 음원을 지원하는 다른 사이트)</span>
-      <input id="refUrl" placeholder="https://www.youtube.com/watch?v=..." autocomplete="off">
-    </label>
-    <div class="setup-actions" style="margin-top:0">
-      <button id="refFile" class="ghost small">내 컴퓨터의 음원 파일 고르기</button>
-      <span id="refFileName" class="muted tiny"></span>
+    <!-- 1. 참고할 음원 고르기 -->
+    <div class="field">
+      <span class="muted">참고할 음원 (MP3 · WAV · M4A …)</span>
+      <div class="pick-row">
+        <button id="refFile" class="primary small">파일 고르기</button>
+        <span id="refFileName" class="muted tiny">선택된 파일 없음</span>
+      </div>
     </div>
+
+    <!-- 2. 음원이 없으면 유튜브에서 받아 온다 -->
+    <details class="yt-box" id="ytBox">
+      <summary>음원이 없나요? 유튜브에서 MP3로 받기</summary>
+      <label class="field">
+        <span class="muted">유튜브 주소</span>
+        <input id="ytUrl" placeholder="https://www.youtube.com/watch?v=..." autocomplete="off">
+      </label>
+      <div class="pick-row">
+        <button id="ytFolderBtn" class="ghost small">저장 폴더</button>
+        <span id="ytFolder" class="muted tiny"></span>
+      </div>
+      <div class="pick-row">
+        <button id="ytGo" class="primary small">MP3로 받기</button>
+        <label class="inst-toggle"><input type="checkbox" id="ytThenAnalyze" checked> 받은 뒤 바로 분석</label>
+      </div>
+      <div class="bar hidden" id="ytBarWrap"><div id="ytBar"></div></div>
+      <p id="ytStatus" class="muted tiny"></p>
+    </details>
 
     <div id="refInstall" class="adopt hidden">
       <b>분석 도구가 아직 설치되지 않았습니다.</b>
-      <span class="muted">librosa · yt-dlp — 약 200MB, 한 번만 받으면 됩니다.</span>
+      <span class="muted">librosa · yt-dlp — 약 200MB, 한 번만 받으면 됩니다. (유튜브 받기도 이걸 씁니다)</span>
       <button id="refInstallBtn" class="primary small">분석 도구 설치</button>
     </div>
 

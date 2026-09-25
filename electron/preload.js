@@ -46,7 +46,15 @@ contextBridge.exposeInMainWorld('norae', {
   setSettings: (patch) => ipcRenderer.invoke('settings:set', patch),
   resetSpeed: () => ipcRenderer.invoke('settings:reset-speed'),
 
-  // 참고곡 분석 (유튜브 주소 / 음원 파일 → 스타일 프롬프트)
+  // 유튜브 → MP3 내려받기 (참고곡을 앱 안에서 바로 구한다)
+  ytFolder: () => ipcRenderer.invoke('yt:folder'),
+  ytPickFolder: () => ipcRenderer.invoke('yt:pick-folder'),
+  ytInfo: (url) => ipcRenderer.invoke('yt:info', url),
+  ytDownload: (options) => ipcRenderer.invoke('yt:download', options),
+  ytCancel: () => ipcRenderer.invoke('yt:cancel'),
+  onYtProgress: on('yt:progress'),
+
+  // 참고곡 분석 (음원 파일 → 스타일 프롬프트)
   analyzeReady: () => ipcRenderer.invoke('analyze:ready'),
   analyzeInstall: () => ipcRenderer.invoke('analyze:install'),
   analyzePickFile: () => ipcRenderer.invoke('analyze:pick-file'),
