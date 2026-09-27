@@ -104,6 +104,18 @@ function instrumentalStyle (style) {
     : `${style}, instrumental, no vocals, no singing, melody carried by lead instrument`
 }
 
+// 스타일에 "92 BPM ... 72 BPM" 처럼 빠르기가 여러 개 섞이면 모델이 상반된 지시를 받는다
+// (프리셋의 BPM + 참고곡/태그에서 옮겨온 BPM). 마지막 하나만 남기고 앞의 것들을 지운다.
+function dedupeBpm (style) {
+  const matches = [...style.matchAll(/\d{2,3}\s*BPM\b/gi)]
+  if (matches.length <= 1) return style
+  const last = matches[matches.length - 1][0]
+  let seen = 0
+  return style
+    .replace(/,?\s*\d{2,3}\s*BPM\b/gi, () => (++seen === matches.length ? `, ${last}` : ''))
+    .replace(/,\s*,/g, ',').replace(/^\s*,\s*/, '').replace(/,\s*$/, '').trim()
+}
+
 // 템포칸에 숫자를 넣으면 스타일의 빠르기를 그 값으로 못박는다.
 // 스타일에 이미 "112 BPM" 같은 말이 있으면 바꿔치고, 없으면 뒤에 붙인다.
 // "steady groove" 같은 말과 실제 숫자가 어긋나면 숫자가 이긴다(모델은 숫자를 더 잘 따른다).
@@ -131,25 +143,36 @@ function cleanLyrics (raw) {
   const descriptions = []
   let lines = raw.replace(/\r\n/g, '\n').split('\n')
 
-  const titles = lines.filter((line) => /^\s*#/.test(line)).length
+  // 제목 줄은 부르는 게 아니다. # 줄과, 수노식 [Title: ...] / [제목: ...] 줄을 뺀다.
+  const isTitleLine = (line) => /^\s*#/.test(line) ||
+    /^\s*\[\s*(title|제목)\s*[:\]]/i.test(line)
+  const titles = lines.filter(isTitleLine).length
   if (titles) {
-    lines = lines.filter((line) => !/^\s*#/.test(line))
+    lines = lines.filter((line) => !isTitleLine(line))
     notes.push(`제목 줄 ${titles}개를 제외했습니다`)
   }
 
   let retagged = 0
+  let dropped = 0
   lines = lines.map((line) => {
     const match = line.match(/^\s*\[([^\]]+)\]\s*$/)
     if (!match) return line
     const { name, description } = extractTagDescription(match[1])
     const rule = TAG_RULES.find(([pattern]) => pattern.test(name))
-    if (!rule) return line
+    if (!rule) {
+      // YuE2 가 모르는 구간 태그([Spoken Word], [Hook 2] 등). 설명은 스타일로 옮기고
+      // 대괄호 줄 자체는 지운다 — 모르는 태그를 그대로 두면 모델이 헷갈린다.
+      if (description) descriptions.push(description)
+      dropped += 1
+      return null
+    }
     if (description) descriptions.push(description)
     const tag = `[${rule[1]}]`
     if (tag !== line.trim()) retagged += 1
     return tag
-  })
+  }).filter((line) => line !== null)
   if (retagged) notes.push(`구간 태그 ${retagged}개를 기본 형태로 바꿨습니다`)
+  if (dropped) notes.push(`AI 가 모르는 태그 ${dropped}개를 제외했습니다`)
 
   const text = lines.join('\n').replace(/\n{3,}/g, '\n\n').trim()
   return { text, notes, descriptions }
@@ -832,6 +855,7 @@ async function loadCoverSource (dir) {
 }
 
 function setMode (next) {
+  const leavingCover = mode === 'cover' && next !== 'cover'
   mode = next
   for (const button of document.querySelectorAll('.mode')) {
     button.classList.toggle('on', button.dataset.mode === next)
@@ -839,6 +863,16 @@ function setMode (next) {
   const cover = next === 'cover'
   $('coverPick').classList.toggle('hidden', !cover)
   $('generate').textContent = cover ? '커버 만들기' : '곡 만들기'
+
+  // 커버에서 새 곡으로 넘어오면 커버 때 채워둔 값(제목·가사·스타일)을 비운다.
+  // 안 그러면 "○○ (커버)" 제목이 새 곡에 그대로 남는다.
+  if (leavingCover) {
+    coverScore = null
+    for (const id of ['title', 'lyrics', 'style', 'tempo']) $(id).value = ''
+    $('coverNote').textContent = ''
+    for (const b of $('presets').children) b.classList.remove('on')
+  }
+
   // 커버는 악보가 이미 있으니 작곡 단계를 건너뛴다. 남은 단계만 세면 된다.
   updateHint()
   if (cover) setCoverFrom($('coverFrom').value)
@@ -1323,6 +1357,8 @@ function wireGenerate () {
       if (!go) return
     }
 
+    // 스타일에 BPM 이 여러 개 섞였으면 마지막 하나만 남긴다.
+    payloadStyle = dedupeBpm(payloadStyle)
     // 템포칸에 값을 넣었으면 스타일의 빠르기를 그 값으로 못박는다.
     payloadStyle = applyTempo(payloadStyle, $('tempo').value)
 
