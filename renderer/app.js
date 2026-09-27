@@ -567,6 +567,23 @@ function wireLibrary () {
 
   $('resumeSong').onclick = () => selected && resumeSong(selected)
 
+  // 만든 곡의 가사·스타일을 새 곡 입력칸으로 가져온다. 조금 고쳐 변주를 만들 때 쓴다.
+  $('reuseSong').onclick = () => {
+    if (!selected) return
+    const s = selected
+    if (!s.style && !s.lyrics) return toast('이 곡에는 재사용할 가사·스타일이 없습니다.')
+    // 커버 모드였다면 setMode('new') 가 먼저 입력칸을 비운다. 그 뒤에 채워야 안 지워진다.
+    setMode('new')
+    $('instrumental').checked = Boolean(s.instrumental)
+    $('instrumental').dispatchEvent(new Event('change')) // 가사칸 잠금·힌트 갱신
+    if (!s.instrumental) $('lyrics').value = s.lyrics || ''
+    $('style').value = s.style || ''
+    $('title').value = s.title || ''
+    for (const b of $('presets').children) b.classList.remove('on')
+    updateHint()
+    toast('가사와 스타일을 가져왔습니다. 고쳐서 새 곡을 만드세요.', 4000)
+  }
+
   $('revealSong').onclick = () => selected && api.reveal(selected.dir)
 
   $('exportMp3').onclick = async () => {
