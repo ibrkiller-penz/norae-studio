@@ -467,10 +467,8 @@ function songLine (song) {
   row.querySelector('.tag').textContent = song.unfinished ? '미완성' : (song.format || '').toUpperCase()
   row.querySelector('.s').textContent = [when, length].filter(Boolean).join(' · ')
 
-  row.onclick = () => {
-    if (song.unfinished) return resumeSong(song)
-    selectSong(song)
-  }
+  // 완성곡이든 미완성곡이든 누르면 선택만 한다. 이어 할지 지울지는 아래 버튼으로 고른다.
+  row.onclick = () => selectSong(song)
   return row
 }
 
@@ -512,7 +510,17 @@ function selectSong (song) {
   selected = song
   $('player').classList.remove('hidden')
   $('nowTitle').textContent = song.title || '무제'
-  $('audio').src = song.audioUrl || ''
+
+  // 미완성 곡은 들을 음원이 없다. 재생기와 안 맞는 버튼(MP3·커버)은 숨기고
+  // [이어 만들기]를 띄운다. 완성곡은 그 반대.
+  const unfinished = Boolean(song.unfinished)
+  $('audio').classList.toggle('hidden', unfinished)
+  if (unfinished) releasePlayer()
+  else $('audio').src = song.audioUrl || ''
+  $('resumeSong').classList.toggle('hidden', !unfinished)
+  $('exportMp3').classList.toggle('hidden', unfinished)
+  $('coverThis').classList.toggle('hidden', unfinished)
+
   $('songMeta').textContent = [
     `스타일: ${song.style || '—'}`,
     `시드: ${song.seed ?? '—'}`,
@@ -524,8 +532,7 @@ function selectSong (song) {
 }
 
 async function resumeSong (song) {
-  const go = await ask(`"${song.title}" 은(는) 만들다 만 곡입니다.\n이어서 만들려면 "이어"라고 입력하세요.`)
-  if (go !== '이어') return
+  if (!await confirmAsk(`"${song.title}" 은(는) 만들다 만 곡입니다. 이어서 만들까요?`, '이어 만들기')) return
   const result = await api.resume(song.dir)
   if (!result.ok) return showProblem(result.message)
   toast('이어서 만듭니다.')
@@ -557,6 +564,8 @@ function wireLibrary () {
     $('nowTitle').textContent = name
     await refreshSongs()
   }
+
+  $('resumeSong').onclick = () => selected && resumeSong(selected)
 
   $('revealSong').onclick = () => selected && api.reveal(selected.dir)
 
