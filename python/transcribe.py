@@ -504,20 +504,31 @@ def transcribe(path: Path, workdir: Path, separate: bool, max_seconds: float,
     if factor >= 2:
         beats = beats[::factor]
 
-    f0, voiced, prob = track_melody(melody_y, sr, hop)
-
-    emit(type="progress", percent=70.0, note="음을 격자에 맞추는 중")
-    events = notes_from_f0(f0, voiced, prob, sr, hop, bpm, beats)
-    sung = sum(1 for _s, _l, n in events if n is not None)
-    if sung == 0:
-        raise RuntimeError("멜로디를 찾지 못했습니다. 보컬이 또렷한 음원으로 시도해 주세요.")
+    # "코드만" 모드는 멜로디를 아예 안 쓴다(코드·템포만 스타일 프롬프트로 넘긴다).
+    # 그러니 멜로디 추적을 건너뛴다 — 노래방 반주처럼 뚜렷한 단선율이 없는 음원도
+    # 코드·템포는 잘 나오므로, 멜로디를 못 찾았다고 여기서 막으면 안 된다.
+    events = []
+    sung = 0
+    if not chords_only:
+        f0, voiced, prob = track_melody(melody_y, sr, hop)
+        emit(type="progress", percent=70.0, note="음을 격자에 맞추는 중")
+        events = notes_from_f0(f0, voiced, prob, sr, hop, bpm, beats)
+        sung = sum(1 for _s, _l, n in events if n is not None)
+        if sung == 0:
+            raise RuntimeError("멜로디를 찾지 못했습니다. 보컬이 또렷한 음원으로 시도해 주세요. "
+                               "(반주만 있는 음원이면 [코드·템포만] 을 쓰세요.)")
 
     emit(type="progress", percent=85.0, note="코드 붙이는 중")
     harmonic = librosa.effects.harmonic(mix_y, margin=3.0)
     chroma = librosa.feature.chroma_cqt(y=harmonic, sr=sr, hop_length=hop)
     key, mode = detect_key(chroma)
-    total_units = max((s + l for s, l, _ in events), default=0)
-    bars = max(1, math.ceil(total_units / UNITS_PER_BAR))
+    if chords_only:
+        # 멜로디가 없으니 마디 수는 곡 길이에서 잡는다(한 마디 = 4박).
+        seconds_per_bar = 60.0 / bpm * 4
+        bars = max(1, int(len(mix_y) / sr / seconds_per_bar))
+    else:
+        total_units = max((s + l for s, l, _ in events), default=0)
+        bars = max(1, math.ceil(total_units / UNITS_PER_BAR))
     chords = chords_per_bar(chroma, sr, hop, bpm, bars, beats)
 
     # "코드만" 모드에서 악보를 넘기면 안 된다.

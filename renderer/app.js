@@ -104,6 +104,16 @@ function instrumentalStyle (style) {
     : `${style}, instrumental, no vocals, no singing, melody carried by lead instrument`
 }
 
+// 템포칸에 숫자를 넣으면 스타일의 빠르기를 그 값으로 못박는다.
+// 스타일에 이미 "112 BPM" 같은 말이 있으면 바꿔치고, 없으면 뒤에 붙인다.
+// "steady groove" 같은 말과 실제 숫자가 어긋나면 숫자가 이긴다(모델은 숫자를 더 잘 따른다).
+function applyTempo (style, bpm) {
+  const n = parseInt(bpm, 10)
+  if (!Number.isFinite(n) || n < 40 || n > 220) return style
+  const withoutBpm = style.replace(/,?\s*\d{2,3}\s*BPM\b/gi, '').trim().replace(/,\s*$/, '')
+  return `${withoutBpm}, ${n} BPM`
+}
+
 // 수노처럼 태그 안에 지시를 적는 사람이 많다.
 //   [Verse 1: mid-range warm female vocal, breathy and husky tone]
 // YuE2 는 그걸 못 읽는다. 대괄호 안은 구간 이름으로만 쓰이고, 악기·보컬 지시는
@@ -1312,6 +1322,9 @@ function wireGenerate () {
         '그래도 만들기')
       if (!go) return
     }
+
+    // 템포칸에 값을 넣었으면 스타일의 빠르기를 그 값으로 못박는다.
+    payloadStyle = applyTempo(payloadStyle, $('tempo').value)
 
     const payload = {
       title: $('title').value.trim() || '무제',

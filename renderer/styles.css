@@ -118,6 +118,7 @@ main {
 #title { width: 150px; }
 .seed-label { display: flex; align-items: center; gap: 6px; color: var(--muted); font-size: 12px; }
 #seed { width: 92px; }
+#tempo { width: 64px; }
 .inst-toggle { display: flex; align-items: center; gap: 5px; font-size: 12px; color: var(--muted); }
 .lyrics-panel textarea, .prompt-panel textarea { flex: 1; min-height: 0; }
 .hint { margin-top: 8px; font-size: 12px; }
